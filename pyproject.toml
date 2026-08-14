@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "peaks-vr"
+version = "0.1.0"
+description = "Taste-driven moment discovery for VR video — a VR-only sibling to peaks."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.31",
+    "numpy>=1.24",    # used across scoring/cache/sampling, not just ML
+]
+
+# Heavy ML deps are kept optional so the plumbing + scoring logic install light.
+# Install with:  pip install -e ".[ml]"
+[project.optional-dependencies]
+ml = [
+    "torch",            # DINOv2 / CLIP inference
+    "open_clip_torch",  # the CLIP channel
+    "torchvision",      # DINOv2 image transforms
+    "pillow",
+    "scikit-learn",     # the Tier-2 taste classifier
+    "av>=12",           # sparse (seek-based) sampling; bundles ffmpeg libs
+    "tqdm",
+]
+web = [
+    "fastapi>=0.110",   # real-time flagging UI + explorer API
+    "uvicorn>=0.27",    # ASGI server
+    "python-multipart", # form/file uploads (reference stills)
+    "websockets>=12",   # HereSphere / DeoVR remote-control channel
+]
+dev = [
+    "pytest>=7",      # the offline test suite (no torch/ffmpeg/Stash needed)
+    "scikit-learn",   # classifier tests exercise the real sklearn estimators
+    "av>=12",         # sparse-sampler tests run against real generated video
+    "fastapi>=0.110", # web API tests (when the web layer is ported)
+    "httpx",          # FastAPI TestClient transport
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,49 @@
+# Local config — holds your Stash URL + API key. NEVER commit.
+config.toml
+*.local.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.python-version
+
+# Caches / generated data — these get large (embeddings, frames, clips)
+cache/
+data/
+embeddings/
+frames/
+clips/
+*.npy
+*.npz
+*.faiss
+*.sqlite
+*.sqlite3
+
+# Model artifacts
+models/*.pkl
+models/*.joblib
+*.pt
+*.onnx
+
+# Your frame labels (personal)
+labels.json
+*.labels.json
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Logs
+*.log
+
+# Megaboard playlist — contains stream URLs with your API key + file refs
+webapp/playlist.json
