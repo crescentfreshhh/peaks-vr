@@ -35,9 +35,13 @@ dev = [
     "pytest>=7",      # the offline test suite (no torch/ffmpeg/Stash needed)
     "scikit-learn",   # classifier tests exercise the real sklearn estimators
     "av>=12",         # sparse-sampler tests run against real generated video
+    "pillow",         # the `score` path loads reference stills; CLI e2e test
     "fastapi>=0.110", # web API tests (when the web layer is ported)
     "httpx",          # FastAPI TestClient transport
 ]
+
+[project.scripts]
+peaks-vr = "peaks_vr.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
