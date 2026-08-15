@@ -173,6 +173,28 @@ def cmd_probe(args) -> int:
     return 0
 
 
+def cmd_flag(args) -> int:
+    """Launch the real-time flagging web UI (README feature #2)."""
+    from .web.flagging import run, run_demo
+
+    if args.demo:
+        run_demo(web_host=args.web_host, web_port=args.web_port,
+                 labels_path=args.labels, profile=args.profile)
+        return 0
+    if not args.host:
+        print("  ✗ --host <headset-ip> is required (or use --demo)",
+              file=sys.stderr)
+        return 2
+    sampler = None
+    if args.preview:
+        # Optional live de-warped preview — needs ffmpeg on PATH.
+        sampler = FrameSampler(interval_seconds=args.interval, mode="interval")
+    run(args.host, args.port, web_host=args.web_host, web_port=args.web_port,
+        labels_path=args.labels, profile=args.profile, byteorder=args.byteorder,
+        sampler=sampler)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="peaks-vr", description=__doc__.splitlines()[0])
     p.add_argument("--cache", default=DEFAULT_CACHE,
@@ -217,6 +239,29 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--test-seek", type=float, default=None, metavar="T",
                     help="also send one seek to T seconds, to test control")
     pr.set_defaults(func=cmd_probe)
+
+    fl = sub.add_parser("flag", help="real-time moment flagging web UI (#2) — "
+                        "mirror the headset and ❤️-mark moments")
+    fl.add_argument("--host", help="headset / player IP (omit with --demo)")
+    fl.add_argument("--port", type=int, default=23554,
+                    help="HereSphere remote port (default: 23554)")
+    fl.add_argument("--web-host", default="0.0.0.0",
+                    help="address to serve the UI on (default: 0.0.0.0)")
+    fl.add_argument("--web-port", type=int, default=8760,
+                    help="port to serve the UI on (default: 8760)")
+    fl.add_argument("--profile", default="apex",
+                    help="taste profile the ❤️ marks belong to (default: apex)")
+    fl.add_argument("--labels", default="labels.json",
+                    help="labels JSON file to append marks to")
+    fl.add_argument("--byteorder", default="big", choices=["big", "little"],
+                    help="remote length-prefix endianness (default: big)")
+    fl.add_argument("--preview", action="store_true",
+                    help="enable the live de-warped frame preview (needs ffmpeg)")
+    fl.add_argument("--interval", type=float, default=2.0,
+                    help="preview sampler interval seconds (default: 2)")
+    fl.add_argument("--demo", action="store_true",
+                    help="run with a synthetic feed — no headset required")
+    fl.set_defaults(func=cmd_flag)
     return p
 
 

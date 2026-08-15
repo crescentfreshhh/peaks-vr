@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>peaks-vr — flag moments</title>
+<link rel="icon" href="data:,">
+<style>
+  :root{
+    --bg:#0b0b0d; --panel:#141417; --panel2:#1b1b20; --fg:#e8e8ea; --dim:#8a8a92;
+    --line:#2a2a30; --accent:#c8a24a; --love:#e0604d; --good:#5aa86b;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    display:flex;flex-direction:column;align-items:center;padding:20px}
+  .wrap{width:100%;max-width:560px}
+  h1{font-size:18px;margin:0 0 2px;letter-spacing:.3px}
+  h1 span{color:var(--accent)}
+  .sub{color:var(--dim);font-size:12px;margin-bottom:16px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:18px;margin-bottom:14px}
+  .status{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim);
+    margin-bottom:10px}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--dim)}
+  .dot.on{background:var(--good)} .dot.off{background:var(--love)}
+  .file{font-size:13px;color:var(--fg);word-break:break-all;min-height:18px}
+  .time{font-variant-numeric:tabular-nums;font-size:40px;font-weight:700;
+    letter-spacing:1px;margin:6px 0 2px}
+  .time small{font-size:16px;color:var(--dim);font-weight:400}
+  .pill{display:inline-block;font-size:11px;padding:2px 9px;border-radius:20px;
+    border:1px solid var(--line);color:var(--dim)}
+  .pill.play{color:var(--good);border-color:var(--good)}
+  .preview{width:100%;aspect-ratio:16/9;background:var(--panel2);border-radius:10px;
+    margin:12px 0 4px;object-fit:cover;display:block}
+  .preview.ph{display:flex;align-items:center;justify-content:center;color:var(--dim);
+    font-size:12px;text-align:center;padding:10px}
+  label.lbl{display:block;font-size:12px;color:var(--dim);margin:14px 0 4px}
+  input[type=range]{width:100%}
+  .lag{font-variant-numeric:tabular-nums;color:var(--accent);font-weight:600}
+  .row{display:flex;gap:10px;margin-top:12px}
+  button{font:inherit;border:1px solid var(--line);background:var(--panel2);
+    color:var(--fg);border-radius:10px;padding:11px 12px;cursor:pointer}
+  button:hover{filter:brightness(1.12)}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  .love{flex:1;background:var(--love);border-color:var(--love);color:#fff;
+    font-size:18px;font-weight:700;padding:15px}
+  .io{flex:1}
+  .io.set{border-color:var(--accent);color:var(--accent)}
+  .marks{list-style:none;margin:0;padding:0;max-height:220px;overflow:auto}
+  .marks li{display:flex;justify-content:space-between;padding:7px 2px;
+    border-bottom:1px solid var(--line);font-size:13px;font-variant-numeric:tabular-nums}
+  .marks li span{color:var(--dim)}
+  .counts{font-size:12px;color:var(--dim);margin-bottom:8px}
+  .counts b{color:var(--love)}
+  .empty{color:var(--dim);font-size:12px;padding:8px 2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1><span>peaks</span>-vr · flag moments</h1>
+  <div class="sub">mirror your headset, tap ❤ when you like what you see</div>
+
+  <div class="card">
+    <div class="status"><span id="dot" class="dot"></span><span id="conn">connecting…</span></div>
+    <div id="file" class="file">—</div>
+    <div class="time"><span id="t">0:00.0</span> <small id="dur"></small></div>
+    <span id="pstate" class="pill">—</span>
+
+    <img id="preview" class="preview ph" alt="preview">
+
+    <label class="lbl">reaction-lag — the good bit was a moment ago:
+      <span class="lag" id="lagv">now</span></label>
+    <input id="lag" type="range" min="-8" max="0" step="0.5" value="0">
+
+    <div class="row">
+      <button id="inBtn" class="io">set in</button>
+      <button id="outBtn" class="io">set out</button>
+      <button id="clrBtn" class="io" title="clear in/out window">✕</button>
+    </div>
+    <div class="row">
+      <button id="love" class="love">❤  MARK</button>
+    </div>
+    <div id="window" class="counts" style="margin-top:10px"></div>
+  </div>
+
+  <div class="card">
+    <div id="counts" class="counts">no marks yet</div>
+    <ul id="marks" class="marks"><li class="empty">nothing marked yet</li></ul>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let state = {path:null, current_time:0, playing:false, connected:false, key:null};
+let inT = null, outT = null;
+
+function fmt(t){
+  if(t == null) return "—";
+  const m = Math.floor(t/60), s = (t%60);
+  return `${m}:${s.toFixed(1).padStart(4,'0')}`;
+}
+function markTime(){ return Math.max(0, state.current_time + parseFloat($('#lag').value)); }
+
+async function poll(){
+  try{
+    const r = await fetch('/api/state'); state = await r.json();
+    const on = state.connected && state.path;
+    $('#dot').className = 'dot ' + (on ? 'on' : 'off');
+    $('#conn').textContent = on ? 'mirroring headset' :
+      (state.connected ? 'connected — waiting for playback' : 'waiting for headset…');
+    $('#file').textContent = state.path || '—';
+    $('#t').textContent = fmt(state.current_time);
+    $('#dur').textContent = state.duration ? '/ ' + fmt(state.duration) : '';
+    $('#pstate').textContent = state.path ? (state.playing ? '▶ playing' : '⏸ paused') : '—';
+    $('#pstate').className = 'pill ' + (state.playing ? 'play' : '');
+    $('#love').disabled = !on;
+    refreshPreview();
+  }catch(e){ $('#conn').textContent = 'server unreachable'; $('#dot').className='dot off'; }
+}
+
+let lastPreview = -999;
+function refreshPreview(){
+  const mt = markTime();
+  if(!state.path){ setPlaceholder('no scene playing'); return; }
+  if(Math.abs(mt - lastPreview) < 0.4) return;
+  lastPreview = mt;
+  const img = $('#preview'), url = `/api/frame?time=${mt.toFixed(2)}&_=${Date.now()}`;
+  const probe = new Image();
+  probe.onload = ()=>{ img.src = url; img.className = 'preview'; };
+  probe.onerror = ()=> setPlaceholder('live preview needs ffmpeg + an embedded scene');
+  probe.src = url;
+}
+function setPlaceholder(msg){ const img=$('#preview'); img.removeAttribute('src'); img.className='preview ph'; img.alt=msg; img.textContent=msg; }
+
+$('#lag').addEventListener('input', ()=>{
+  const v = parseFloat($('#lag').value);
+  $('#lagv').textContent = v === 0 ? 'now' : `${v.toFixed(1)}s`;
+  lastPreview = -999; refreshPreview();
+});
+$('#inBtn').onclick = ()=>{ inT = markTime(); paintWindow(); };
+$('#outBtn').onclick = ()=>{ outT = markTime(); paintWindow(); };
+$('#clrBtn').onclick = ()=>{ inT = outT = null; paintWindow(); };
+function paintWindow(){
+  $('#inBtn').className  = 'io' + (inT!=null?' set':'');
+  $('#outBtn').className = 'io' + (outT!=null?' set':'');
+  $('#window').innerHTML = (inT!=null||outT!=null)
+    ? `window: <b>${fmt(inT)}</b> → <b>${fmt(outT)}</b>` : '';
+}
+
+$('#love').onclick = async ()=>{
+  const body = {time: markTime()};
+  if(inT != null) body.in_time = inT;
+  if(outT != null) body.out_time = outT;
+  const r = await fetch('/api/mark', {method:'POST',
+    headers:{'content-type':'application/json'}, body: JSON.stringify(body)});
+  if(r.ok){
+    flash(); inT = outT = null; paintWindow(); $('#lag').value = 0;
+    $('#lagv').textContent='now'; loadMarks();
+  }
+};
+function flash(){ const b=$('#love'); b.textContent='❤  marked!'; b.style.background='var(--good)';
+  setTimeout(()=>{ b.textContent='❤  MARK'; b.style.background='var(--love)'; }, 700); }
+
+async function loadMarks(){
+  const r = await fetch('/api/marks'); const m = await r.json();
+  $('#counts').innerHTML = m.length ? `<b>${m.length}</b> moments marked` : 'no marks yet';
+  const ul = $('#marks');
+  ul.innerHTML = m.length ? '' : '<li class="empty">nothing marked yet</li>';
+  for(const x of m.slice(0,50)){
+    const li = document.createElement('li');
+    const name = (x.scene_id||x.key).split(/[\\/]/).pop();
+    li.innerHTML = `<span>${name}</span><b>${fmt(x.time)}</b>`;
+    ul.appendChild(li);
+  }
+}
+
+poll(); setInterval(poll, 500); loadMarks();
+</script>
+</body>
+</html>

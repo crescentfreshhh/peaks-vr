@@ -45,3 +45,6 @@ peaks-vr = "peaks_vr.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"peaks_vr.web" = ["static/*"]
