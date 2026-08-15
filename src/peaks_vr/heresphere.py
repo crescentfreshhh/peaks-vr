@@ -47,6 +47,7 @@ from typing import Iterator
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 23554  # DeoVR remote-control default; confirm for HereSphere
+DEFAULT_TS_PORT = 23573  # where HereSphere's "timestamp server" pushes to us
 PING_INTERVAL = 1.0   # seconds; player drops us after ~3s of silence
 
 # playerState enum (DeoVR remote protocol)
@@ -127,8 +128,11 @@ class PlaybackState:
 
     @classmethod
     def from_packet(cls, d: dict) -> "PlaybackState":
+        # The DeoVR remote reports the file as "path"; HereSphere's timestamp
+        # server reports it as "resource" (with the scene URL in "identifier").
+        # Accept either so one PlaybackState covers both channels.
         return cls(
-            path=d.get("path") or None,
+            path=d.get("path") or d.get("resource") or None,
             current_time=float(d.get("currentTime") or 0.0),
             playing=int(d.get("playerState", STATE_PLAYING)) == STATE_PLAYING,
             duration=(float(d["duration"]) if d.get("duration") is not None else None),
@@ -288,6 +292,150 @@ class RemoteClient:
 
     def __enter__(self) -> "RemoteClient":
         self.connect()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+# --- timestamp server (HereSphere connects to US and pushes) ----------------
+
+class _JsonStreamDecoder:
+    """Decode a stream of JSON objects that are NOT length-prefixed — whitespace/
+    newline separated or simply concatenated. A fallback for HereSphere builds
+    whose timestamp server pushes raw JSON rather than DeoVR framing."""
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._dec = json.JSONDecoder()
+
+    def feed(self, data: bytes) -> "Iterator[dict]":
+        self._buf += data.decode("utf-8", errors="replace")
+        while True:
+            self._buf = self._buf.lstrip()
+            if not self._buf:
+                return
+            try:
+                obj, end = self._dec.raw_decode(self._buf)
+            except json.JSONDecodeError:
+                return  # incomplete tail; wait for more bytes
+            self._buf = self._buf[end:]
+            if isinstance(obj, dict):
+                yield obj
+
+
+def _looks_like_json_text(chunk: bytes) -> bool:
+    return chunk.lstrip()[:1] in (b"{", b"[")
+
+
+class TimestampReceiver:
+    """Receives HereSphere's **timestamp server** push (the headset connects to
+    *us*), the inverse of :class:`RemoteClient` (we connect to the headset).
+
+    HereSphere's timestamp server streams the currently-playing file
+    (``resource``), title, and ``currentTime`` to a host:port you configure —
+    it's how it drives external sync devices, and it's the read surface for
+    real-time flagging when a build exposes no DeoVR "remote control" toggle.
+
+    The wire format is the same DeoVR-style JSON, so decoding reuses
+    :class:`FrameDecoder` / :meth:`PlaybackState.from_packet`. Because the exact
+    framing of the push isn't fully documented, :meth:`monitor` **auto-detects**
+    length-prefixed vs. raw-JSON framing and, if it can decode neither, hands the
+    raw bytes to ``on_raw`` so a probe run reveals the true format.
+    """
+
+    def __init__(self, host: str = "0.0.0.0", port: int = DEFAULT_TS_PORT, *,
+                 byteorder: str = "big"):
+        self.host = host
+        self.port = port
+        self.byteorder = byteorder
+        self._server: socket.socket | None = None
+        self._conn: socket.socket | None = None
+        self._latest: PlaybackState | None = None
+        self._stop = threading.Event()
+
+    def bind(self) -> None:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind((self.host, self.port))
+        except OSError as exc:
+            raise RemoteError(
+                f"could not bind {self.host}:{self.port} for the timestamp "
+                f"server ({exc}) — is the port already in use?") from exc
+        s.listen(1)
+        s.settimeout(0.5)  # so accept() can observe the stop flag
+        self._server = s
+
+    def accept(self, timeout: float | None = None) -> str:
+        """Block until HereSphere connects; return its IP. ``timeout`` seconds
+        (None = until stopped)."""
+        if self._server is None:
+            self.bind()
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while not self._stop.is_set():
+            try:
+                conn, addr = self._server.accept()
+            except socket.timeout:
+                if deadline and time.monotonic() >= deadline:
+                    raise RemoteError("timed out waiting for HereSphere to "
+                                      "connect to the timestamp server")
+                continue
+            self._conn = conn
+            self._conn.settimeout(1.0)
+            return addr[0]
+        raise RemoteError("stopped before any connection")
+
+    def monitor(self, *, on_raw=None) -> Iterator[PlaybackState]:
+        """Yield a :class:`PlaybackState` per pushed packet. Auto-detects the
+        framing from the first bytes; on an undecodable stream, calls
+        ``on_raw(bytes)`` (for diagnostics) and stops."""
+        if self._conn is None:
+            self.accept()
+        first = self._conn.recv(4096)
+        if not first:
+            return
+        use_json = _looks_like_json_text(first)
+        decoder = _JsonStreamDecoder() if use_json else FrameDecoder(byteorder=self.byteorder)
+
+        def _emit(chunk: bytes) -> Iterator[PlaybackState]:
+            produced = False
+            for msg in decoder.feed(chunk):
+                if msg is None:
+                    continue  # keep-alive ping
+                produced = True
+                state = PlaybackState.from_packet(msg)
+                self._latest = state
+                yield state
+            if not produced and not use_json and on_raw is not None:
+                # framed decode yielded nothing from a full chunk — likely the
+                # wrong framing/endianness; surface the raw bytes once.
+                on_raw(chunk)
+
+        yield from _emit(first)
+        while not self._stop.is_set():
+            try:
+                chunk = self._conn.recv(4096)
+            except socket.timeout:
+                continue
+            except OSError as exc:
+                raise RemoteError(f"timestamp connection lost: {exc}") from exc
+            if not chunk:
+                return
+            yield from _emit(chunk)
+
+    def close(self) -> None:
+        self._stop.set()
+        for sock in (self._conn, self._server):
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+        self._conn = self._server = None
+
+    def __enter__(self) -> "TimestampReceiver":
+        self.bind()
         return self
 
     def __exit__(self, *exc) -> None:

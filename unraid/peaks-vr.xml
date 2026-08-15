@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>peaks-vr</Name>
+  <Repository>ghcr.io/crescentfreshhh/peaks-vr:latest</Repository>
+  <Registry>https://ghcr.io</Registry>
+  <Network>bridge</Network>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/crescentfreshhh/peaks-vr</Support>
+  <Project>https://github.com/crescentfreshhh/peaks-vr</Project>
+  <Overview>peaks-vr — taste-driven moment discovery for VR video. While you watch in HereSphere, the flagging web UI (port 8760) mirrors playback and lets you heart the moments you like; it learns your taste, finds similar moments across your library, and can play them back-to-back in the headset (the VR DJ). HereSphere reports playback via its TIMESTAMP SERVER: after starting this container, open HereSphere's settings and set the timestamp server to THIS SERVER'S LAN IP and port 23573 (the container listens there). Open the UI at [IP]:8760. The embedding pass (Console: peaks-vr --model dino embed /data/clip.mp4 --vr) is GPU-hungry and needs the Nvidia Driver plugin + --runtime=nvidia; the flag UI + timestamp intake run CPU-only. IMPORTANT: mount your VR library at /data so file paths reported by HereSphere resolve here.</Overview>
+  <Category>MediaApp:Video Tools:</Category>
+  <WebUI>http://[IP]:[PORT:8760]</WebUI>
+  <TemplateURL/>
+  <Icon/>
+  <ExtraParams>--runtime=nvidia</ExtraParams>
+  <PostArgs/>
+  <DonateText/>
+  <DonateLink/>
+
+  <Config Name="Flagging UI (WebUI)" Target="8760" Default="8760" Mode="tcp" Description="The real-time flagging web page." Type="Port" Display="always" Required="true" Mask="false">8760</Config>
+  <Config Name="Timestamp server intake" Target="23573" Default="23573" Mode="tcp" Description="HereSphere's timestamp server connects IN here and pushes playback. Set HereSphere's timestamp server to this server's LAN IP : this port." Type="Port" Display="always" Required="true" Mask="false">23573</Config>
+
+  <Config Name="Config / data" Target="/config" Default="/mnt/user/appdata/peaks-vr" Mode="rw" Description="Embedding cache, ❤️ labels, trained models, and DINOv2/CLIP model downloads." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/peaks-vr</Config>
+  <Config Name="VR library" Target="/data" Default="" Mode="ro" Description="Your VR video library. Mount the share here (read-only is fine). File paths HereSphere reports should resolve under this mount for embedding/recommendations to line up." Type="Path" Display="always" Required="true" Mask="false"></Config>
+
+  <Config Name="PEAKS_VR_PROFILE" Target="PEAKS_VR_PROFILE" Default="apex" Mode="" Description="The taste profile your ❤️ marks belong to (you can keep several, e.g. apex-pov). Default: apex." Type="Variable" Display="always" Required="false" Mask="false">apex</Config>
+  <Config Name="PEAKS_VR_REMOTE_HOST" Target="PEAKS_VR_REMOTE_HOST" Default="" Mode="" Description="Leave BLANK to receive HereSphere's timestamp server (recommended, the headset connects in). Set to the headset IP to instead DIAL the DeoVR remote (read + control) — only if your build exposes it on port 23554." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="PEAKS_VR_BYTEORDER" Target="PEAKS_VR_BYTEORDER" Default="big" Mode="" Description="Length-prefix endianness of the HereSphere stream. 'big' (default). If the flagging UI connects but shows no playback, try 'little'." Type="Variable" Display="advanced" Required="false" Mask="false">big</Config>
+  <Config Name="PEAKS_VR_PREVIEW" Target="PEAKS_VR_PREVIEW" Default="" Mode="" Description="Set to 1 to show a live de-warped frame preview in the UI (needs ffmpeg + the scene embedded; GPU recommended). Blank = off." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="NVIDIA_VISIBLE_DEVICES" Target="NVIDIA_VISIBLE_DEVICES" Default="all" Mode="" Description="Which GPU(s) the container may use ('all', or a GPU UUID from Settings &gt; Nvidia Driver)." Type="Variable" Display="advanced" Required="false" Mask="false">all</Config>
+  <Config Name="NVIDIA_DRIVER_CAPABILITIES" Target="NVIDIA_DRIVER_CAPABILITIES" Default="all" Mode="" Description="Leave as 'all' (compute for embedding + video for NVDEC decode)." Type="Variable" Display="advanced" Required="false" Mask="false">all</Config>
+</Container>

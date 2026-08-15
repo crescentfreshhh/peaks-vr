@@ -17,10 +17,35 @@ The two load-bearing questions and their answers:
 Because live current-time **is** externally readable, the bookmark fallback the
 README worried about is **not needed**.
 
-HereSphere is **DeoVR remote-control compatible**, so it speaks the DeoVR remote
-protocol below. The implementation of this spec lives in
+The implementation lives in
 [`src/peaks_vr/heresphere.py`](../src/peaks_vr/heresphere.py); the on-device
 check is [`peaks-vr probe`](../src/peaks_vr/cli.py).
+
+---
+
+## Two channels (they run in opposite directions)
+
+HereSphere builds expose playback in one (or both) of two ways. The **wire
+format is the same DeoVR-style JSON** on both; only *who connects to whom*
+differs — so peaks-vr shares one decoder and just flips the socket role.
+
+| | **Timestamp server** | **DeoVR remote** |
+|---|---|---|
+| Who dials | **HereSphere → peaks-vr** (headset connects in) | **peaks-vr → HereSphere** |
+| peaks-vr | *listens* on `23573` (`TimestampReceiver`) | *connects* to `:23554` (`RemoteClient`) |
+| Surface | read (file + timecode) | read **+ control** (seek/load) |
+| Powers | flagging (#2) | flagging **and** the DJ (#4) |
+| File field | `resource` | `path` |
+| Enable | set peaks-vr's IP:port in HereSphere's timestamp-server settings | (may be on by default) point peaks-vr at the headset IP |
+| Probe | `peaks-vr probe --listen` | `peaks-vr probe --host <ip>` |
+
+Most builds surface the **timestamp server** (it asks you for an IP + port). It
+fully covers flagging. The **DJ** needs *control*, which only the **DeoVR remote**
+provides — confirm your build offers it with `peaks-vr probe --host <ip>`.
+
+The timestamp server reports the playing file as **`resource`** (with the scene
+URL in `identifier`); the DeoVR remote uses **`path`**. `PlaybackState.from_packet`
+accepts either, so both channels produce the same state.
 
 ---
 

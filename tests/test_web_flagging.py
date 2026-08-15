@@ -87,3 +87,40 @@ def test_index_page_served(tmp_path):
     r = client.get("/")
     assert r.status_code == 200
     assert "flag moments" in r.text
+
+
+def test_timestamp_feeder_populates_mirror(tmp_path):
+    """The listen-mode feeder (HereSphere pushes to us) drives the same mirror
+    the UI reads — so /api/state reflects a pushed packet."""
+    import socket
+    import threading
+    import time
+
+    from peaks_vr.heresphere import encode_frame
+    from peaks_vr.web.flagging import PlaybackMirror, timestamp_feeder
+
+    mirror = PlaybackMirror()
+    # bind an ephemeral port by starting the feeder on port 0 is not possible
+    # (needs a known port), so pick a free one first
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
+    mirror.start_feeder(timestamp_feeder(port, host="127.0.0.1"))
+    time.sleep(0.2)  # let it bind + listen
+
+    def push():
+        c = socket.create_connection(("127.0.0.1", port))
+        c.sendall(encode_frame({"resource": "Z:/vr/live.mp4",
+                                "currentTime": 7.0, "playerState": 0}))
+        time.sleep(0.3); c.close()
+
+    threading.Thread(target=push, daemon=True).start()
+
+    # poll the mirror briefly for the pushed state
+    deadline = time.time() + 3
+    connected = st = None
+    while time.time() < deadline:
+        connected, st = mirror.snapshot()
+        if st is not None:
+            break
+        time.sleep(0.05)
+    mirror.stop()
+    assert st is not None and st.path == "Z:/vr/live.mp4" and st.current_time == 7.0

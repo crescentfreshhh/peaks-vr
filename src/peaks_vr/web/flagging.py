@@ -116,6 +116,36 @@ def remote_feeder(host: str, port: int, *, byteorder: str = "big"):
     return feed
 
 
+def timestamp_feeder(port: int, *, host: str = "0.0.0.0", byteorder: str = "big"):
+    """A feeder for HereSphere's **timestamp server**: the headset connects to
+    us and pushes playback, so we listen (inverse of :func:`remote_feeder`).
+    Re-arms after a disconnect so the next play session reconnects cleanly."""
+    from ..heresphere import RemoteError, TimestampReceiver
+
+    def feed(mirror: PlaybackMirror, stop: threading.Event) -> None:
+        rx = TimestampReceiver(host=host, port=port, byteorder=byteorder)
+        try:
+            rx.bind()
+        except RemoteError as exc:
+            print(f"timestamp server: {exc}")
+            return
+        while not stop.is_set():
+            try:
+                rx.accept()
+                mirror.set_connected(True)
+                for state in rx.monitor():
+                    if stop.is_set():
+                        break
+                    mirror.update(state)
+            except RemoteError:
+                pass
+            mirror.set_connected(False)
+            rx._conn = None  # drop the finished connection, wait for the next
+        rx.close()
+
+    return feed
+
+
 def demo_feeder(path: str = "D:/vr/demo_scene_180_sbs.mp4", duration: float = 600.0):
     """A headset-free feeder: a timecode that advances in real time and loops,
     so the UI is fully demonstrable with no hardware."""
@@ -227,17 +257,29 @@ def _serve(app, host: str, port: int) -> None:
     uvicorn.run(app, host=host, port=port, log_level="warning")
 
 
-def run(hs_host: str, hs_port: int = 23554, *, web_host: str = "0.0.0.0",
-        web_port: int = DEFAULT_WEB_PORT, labels_path: str = "labels.json",
-        profile: str = DEFAULT_PROFILE, byteorder: str = "big",
-        sampler=None) -> None:
-    """Run the flagging UI against a real HereSphere headset."""
+def run(hs_host: str | None = None, hs_port: int = 23554, *,
+        listen: bool = False, ts_port: int = 23573,
+        web_host: str = "0.0.0.0", web_port: int = DEFAULT_WEB_PORT,
+        labels_path: str = "labels.json", profile: str = DEFAULT_PROFILE,
+        byteorder: str = "big", sampler=None) -> None:
+    """Run the flagging UI against a real HereSphere headset.
+
+    Two ways to source playback: ``listen=True`` receives HereSphere's
+    **timestamp server** push on ``ts_port`` (the headset connects to us — the
+    container default); otherwise we dial the headset's DeoVR remote at
+    ``hs_host:hs_port``.
+    """
     mirror = PlaybackMirror()
-    mirror.start_feeder(remote_feeder(hs_host, hs_port, byteorder=byteorder))
+    if listen:
+        mirror.start_feeder(timestamp_feeder(ts_port, byteorder=byteorder))
+        source = f"timestamp server :{ts_port} (HereSphere connects in)"
+    else:
+        mirror.start_feeder(remote_feeder(hs_host, hs_port, byteorder=byteorder))
+        source = f"remote {hs_host}:{hs_port}"
     store = LabelStore(labels_path)
     app = create_app(mirror, store, profile=profile, sampler=sampler)
     print(f"peaks-vr flagging UI → http://{web_host}:{web_port}  "
-          f"(mirroring {hs_host}:{hs_port}, profile '{profile}')")
+          f"(source: {source}, profile '{profile}')")
     _serve(app, web_host, web_port)
 
 

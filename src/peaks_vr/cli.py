@@ -126,11 +126,87 @@ def cmd_score(args) -> int:
     return 0
 
 
+def _probe_listen(args) -> int:
+    """Listen for HereSphere's timestamp-server push (headset connects to us)."""
+    import socket as _socket
+
+    from .heresphere import RemoteError, TimestampReceiver
+
+    def lan_ip() -> str:
+        try:
+            s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80)); ip = s.getsockname()[0]; s.close()
+            return ip
+        except OSError:
+            return "<this-computer-ip>"
+
+    rx = TimestampReceiver(port=args.ts_port, byteorder=args.byteorder)
+    try:
+        rx.bind()
+    except RemoteError as exc:
+        print(f"  ✗ {exc}", file=sys.stderr)
+        return 1
+    print(f"listening on {lan_ip()}:{args.ts_port} — set HereSphere's timestamp "
+          f"server to this address, then play a video.", file=sys.stderr)
+    try:
+        ip = rx.accept(timeout=args.seconds)
+    except RemoteError as exc:
+        print(f"  ✗ {exc} (nothing connected within {args.seconds:g}s)",
+              file=sys.stderr)
+        rx.close()
+        return 1
+    print(f"  ✓ HereSphere connected from {ip}", file=sys.stderr)
+
+    seen = 0
+    raw_shown = False
+
+    def on_raw(chunk: bytes) -> None:
+        nonlocal raw_shown
+        if raw_shown:
+            return
+        raw_shown = True
+        print(f"  ? couldn't decode the stream — first bytes (hex):\n    "
+              f"{chunk[:64].hex(' ')}\n    ascii: {chunk[:64]!r}\n    "
+              f"(paste this back — it tells us the exact format to parse)",
+              file=sys.stderr)
+
+    deadline = time.monotonic() + args.seconds
+    try:
+        for st in rx.monitor(on_raw=on_raw):
+            seen += 1
+            state = "▶ playing" if st.playing else "⏸ paused"
+            dur = f"/{st.duration:.1f}s" if st.duration else ""
+            print(f"  [{seen:>3}] {state}  t={st.current_time:7.2f}s{dur}  "
+                  f"path={st.path!r}")
+            if time.monotonic() >= deadline:
+                break
+    except RemoteError as exc:
+        print(f"  ✗ {exc}", file=sys.stderr)
+    finally:
+        rx.close()
+
+    if seen == 0:
+        print("  ✗ connected but decoded no playback packets — see the hex above.",
+              file=sys.stderr)
+        return 1
+    print(f"\nprobe: received {seen} timestamp packet(s) — the READ surface works "
+          f"(flagging is good to go). Control/DJ still needs the DeoVR remote: "
+          f"try `peaks-vr probe --host <headset-ip>`.")
+    return 0
+
+
 def cmd_probe(args) -> int:
-    """Phase-0 on-device check: connect to HereSphere's remote and print live
-    playback state, optionally testing a seek. This is the single command the
-    user runs against a real headset to confirm the read + control surface."""
+    """On-device check of the HereSphere link. Two modes: --listen receives the
+    timestamp-server push (headset → us, read); --host dials the DeoVR remote
+    (us → headset, read + control)."""
     from .heresphere import RemoteClient, RemoteError
+
+    if args.listen:
+        return _probe_listen(args)
+    if not args.host:
+        print("  ✗ give --host <headset-ip> (DeoVR remote) or --listen "
+              "(timestamp server)", file=sys.stderr)
+        return 2
 
     print(f"connecting to {args.host}:{args.port} "
           f"({args.byteorder}-endian framing)…", file=sys.stderr)
@@ -241,17 +317,17 @@ def cmd_flag(args) -> int:
         run_demo(web_host=args.web_host, web_port=args.web_port,
                  labels_path=args.labels, profile=args.profile)
         return 0
-    if not args.host:
-        print("  ✗ --host <headset-ip> is required (or use --demo)",
-              file=sys.stderr)
+    if not args.listen and not args.host:
+        print("  ✗ need --listen (HereSphere timestamp server) or --host "
+              "<headset-ip> (DeoVR remote), or --demo", file=sys.stderr)
         return 2
     sampler = None
     if args.preview:
         # Optional live de-warped preview — needs ffmpeg on PATH.
         sampler = FrameSampler(interval_seconds=args.interval, mode="interval")
-    run(args.host, args.port, web_host=args.web_host, web_port=args.web_port,
-        labels_path=args.labels, profile=args.profile, byteorder=args.byteorder,
-        sampler=sampler)
+    run(args.host, args.port, listen=args.listen, ts_port=args.ts_port,
+        web_host=args.web_host, web_port=args.web_port, labels_path=args.labels,
+        profile=args.profile, byteorder=args.byteorder, sampler=sampler)
     return 0
 
 
@@ -286,25 +362,37 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--pad", type=float, default=ScoringConfig.pad)
     s.set_defaults(func=cmd_score)
 
-    pr = sub.add_parser("probe", help="Phase-0: check the HereSphere remote "
-                        "control surface on a real headset")
-    pr.add_argument("--host", required=True,
-                    help="headset / player IP address (from its WiFi settings)")
+    pr = sub.add_parser("probe", help="check the HereSphere link — --listen for "
+                        "the timestamp server, or --host for the DeoVR remote")
+    pr.add_argument("--listen", action="store_true",
+                    help="receive HereSphere's timestamp-server push (headset "
+                         "connects to us — read surface)")
+    pr.add_argument("--ts-port", type=int, default=23573,
+                    help="port to listen on for --listen (default: 23573)")
+    pr.add_argument("--host",
+                    help="headset IP for the DeoVR remote (read + control)")
     pr.add_argument("--port", type=int, default=23554,
-                    help="remote-control TCP port (default: 23554)")
+                    help="DeoVR remote TCP port (default: 23554)")
     pr.add_argument("--seconds", type=float, default=10.0,
-                    help="how long to listen for status packets (default: 10)")
+                    help="how long to wait/listen (default: 10)")
     pr.add_argument("--byteorder", default="big", choices=["big", "little"],
                     help="length-prefix endianness (default: big)")
     pr.add_argument("--test-seek", type=float, default=None, metavar="T",
-                    help="also send one seek to T seconds, to test control")
+                    help="(--host only) also send one seek to T seconds")
     pr.set_defaults(func=cmd_probe)
 
     fl = sub.add_parser("flag", help="real-time moment flagging web UI (#2) — "
                         "mirror the headset and ❤️-mark moments")
-    fl.add_argument("--host", help="headset / player IP (omit with --demo)")
+    fl.add_argument("--listen", action="store_true",
+                    help="receive HereSphere's timestamp-server push (headset "
+                         "connects to us) instead of dialing the DeoVR remote")
+    fl.add_argument("--ts-port", type=int, default=23573,
+                    help="port HereSphere's timestamp server pushes to "
+                         "(default: 23573; used with --listen)")
+    fl.add_argument("--host", help="headset / player IP for the DeoVR remote "
+                    "(omit with --listen or --demo)")
     fl.add_argument("--port", type=int, default=23554,
-                    help="HereSphere remote port (default: 23554)")
+                    help="HereSphere DeoVR remote port (default: 23554)")
     fl.add_argument("--web-host", default="0.0.0.0",
                     help="address to serve the UI on (default: 0.0.0.0)")
     fl.add_argument("--web-port", type=int, default=8760,

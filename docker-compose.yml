@@ -1,0 +1,35 @@
+# peaks-vr — one-command run.
+#
+#   docker compose up -d
+#   → flagging UI at http://<this-host>:8760
+#   → set HereSphere's timestamp server to <this-host-LAN-IP>:23573
+#
+# Edit MEDIA below to point at your VR library, then in the container use
+#   docker compose exec peaks-vr peaks-vr --model dino embed /data/<clip>.mp4 --vr
+#
+# The GPU block is only needed for `embed` (the de-warp + embedding pass); the
+# flag UI + timestamp intake run CPU-only. Remove the `deploy:` block if you
+# have no NVIDIA GPU / runtime.
+
+services:
+  peaks-vr:
+    image: ghcr.io/crescentfreshhh/peaks-vr:latest
+    container_name: peaks-vr
+    restart: unless-stopped
+    ports:
+      - "8760:8760"     # flagging web UI
+      - "23573:23573"   # HereSphere timestamp-server intake
+    volumes:
+      - ./config:/config          # cache, labels, models, model downloads
+      - /path/to/vr/library:/data:ro   # EDIT: your VR library (read-only)
+    environment:
+      - PEAKS_VR_PROFILE=apex
+      # - PEAKS_VR_REMOTE_HOST=192.168.1.42   # dial the DeoVR remote instead of listening
+      # - PEAKS_VR_PREVIEW=1                   # live de-warped preview (needs GPU)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, video]
