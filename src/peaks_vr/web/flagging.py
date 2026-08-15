@@ -32,7 +32,7 @@ from ..labels import LabelStore
 
 STATIC_DIR = Path(__file__).parent / "static"
 DEFAULT_PROFILE = "apex"
-DEFAULT_WEB_PORT = 8760
+DEFAULT_WEB_PORT = 8801
 
 # The request body must be a MODULE-LEVEL pydantic model or FastAPI resolves it
 # as query params instead of a body (a locally-defined class fails hint

@@ -1,6 +1,6 @@
 # peaks-vr — container image for Unraid / Docker (mirrors the 2D peaks image).
 #
-# The default process is the real-time flagging web UI (port 8760) plus the
+# The default process is the real-time flagging web UI (port 8801) plus the
 # HereSphere "timestamp server" listener (port 23573) that the headset pushes
 # playback into. embed / recommend / dj run from the container console.
 #
@@ -46,8 +46,8 @@ ENV TORCH_HOME=/config/torch \
     HF_HOME=/config/hf
 
 WORKDIR /config
-# 8760 = flagging web UI; 23573 = HereSphere timestamp-server intake
-EXPOSE 8760 23573
+# 8801 = flagging web UI; 23573 = HereSphere timestamp-server intake
+EXPOSE 8801 23573
 ENTRYPOINT ["/entrypoint.sh"]
 # default: the flagging UI, sourcing playback from HereSphere's timestamp server
 # (the headset connects IN to 23573). run-flag.sh builds the invocation from

@@ -395,8 +395,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="HereSphere DeoVR remote port (default: 23554)")
     fl.add_argument("--web-host", default="0.0.0.0",
                     help="address to serve the UI on (default: 0.0.0.0)")
-    fl.add_argument("--web-port", type=int, default=8760,
-                    help="port to serve the UI on (default: 8760)")
+    fl.add_argument("--web-port", type=int, default=8801,
+                    help="port to serve the UI on (default: 8801)")
     fl.add_argument("--profile", default="apex",
                     help="taste profile the ❤️ marks belong to (default: apex)")
     fl.add_argument("--labels", default="labels.json",

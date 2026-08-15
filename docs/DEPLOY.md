@@ -5,7 +5,7 @@ machine. The image ships CUDA torch + an NVDEC ffmpeg, so the GPU-heavy `embed`
 pass works with the NVIDIA runtime; the flagging UI and the HereSphere intake run
 CPU-only.
 
-The container runs the **flagging web UI** (port `8760`) plus a **HereSphere
+The container runs the **flagging web UI** (port `8801`) plus a **HereSphere
 timestamp-server listener** (port `23573`). `embed` / `recommend` / `dj` run from
 the container console.
 
@@ -39,7 +39,7 @@ remote — test whether your build offers it separately (below).
 2. Set the two paths:
    - **Config / data** → `/mnt/user/appdata/peaks-vr` (cache, labels, models).
    - **VR library** → the share holding your VR videos, mounted at `/data` (ro).
-3. Leave the ports at `8760` / `23573`. Keep `--runtime=nvidia` (needs the
+3. Leave the ports at `8801` / `23573`. Keep `--runtime=nvidia` (needs the
    **Nvidia Driver** plugin) for embedding.
 4. Apply — it pulls the image and starts.
 
@@ -63,7 +63,7 @@ the GPU.)
    shows it; otherwise `ip addr` / `ipconfig`. Say it's `192.168.1.50`.
 2. In HereSphere → settings → **timestamp server**, enter
    `192.168.1.50` and port **`23573`**, and enable it.
-3. Open the UI at **http://192.168.1.50:8760**, put the headset on, play a video.
+3. Open the UI at **http://192.168.1.50:8801**, put the headset on, play a video.
    The page should mirror playback; tap **❤ MARK** on the moments you like.
    Marks persist to `/config/labels.json`.
 
@@ -98,7 +98,7 @@ docker exec -it peaks-vr peaks-vr dj /config/playlist.json --host <headset-ip>
 |---|---|---|
 | `PEAKS_VR_PROFILE` | `apex` | taste profile the ❤️ marks belong to |
 | `PEAKS_VR_TS_PORT` | `23573` | timestamp-server intake port |
-| `PEAKS_VR_WEB_PORT` | `8760` | flagging UI port |
+| `PEAKS_VR_WEB_PORT` | `8801` | flagging UI port |
 | `PEAKS_VR_BYTEORDER` | `big` | stream length-prefix endianness (`big`/`little`) |
 | `PEAKS_VR_REMOTE_HOST` | _(unset)_ | set to the headset IP to **dial the DeoVR remote** instead of listening |
 | `PEAKS_VR_REMOTE_PORT` | `23554` | DeoVR remote port |

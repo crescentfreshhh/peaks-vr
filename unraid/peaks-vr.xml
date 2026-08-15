@@ -8,9 +8,9 @@
   <Privileged>false</Privileged>
   <Support>https://github.com/crescentfreshhh/peaks-vr</Support>
   <Project>https://github.com/crescentfreshhh/peaks-vr</Project>
-  <Overview>peaks-vr — taste-driven moment discovery for VR video. While you watch in HereSphere, the flagging web UI (port 8760) mirrors playback and lets you heart the moments you like; it learns your taste, finds similar moments across your library, and can play them back-to-back in the headset (the VR DJ). HereSphere reports playback via its TIMESTAMP SERVER: after starting this container, open HereSphere's settings and set the timestamp server to THIS SERVER'S LAN IP and port 23573 (the container listens there). Open the UI at [IP]:8760. The embedding pass (Console: peaks-vr --model dino embed /data/clip.mp4 --vr) is GPU-hungry and needs the Nvidia Driver plugin + --runtime=nvidia; the flag UI + timestamp intake run CPU-only. IMPORTANT: mount your VR library at /data so file paths reported by HereSphere resolve here.</Overview>
+  <Overview>peaks-vr — taste-driven moment discovery for VR video. While you watch in HereSphere, the flagging web UI (port 8801) mirrors playback and lets you heart the moments you like; it learns your taste, finds similar moments across your library, and can play them back-to-back in the headset (the VR DJ). HereSphere reports playback via its TIMESTAMP SERVER: after starting this container, open HereSphere's settings and set the timestamp server to THIS SERVER'S LAN IP and port 23573 (the container listens there). Open the UI at [IP]:8801. The embedding pass (Console: peaks-vr --model dino embed /data/clip.mp4 --vr) is GPU-hungry and needs the Nvidia Driver plugin + --runtime=nvidia; the flag UI + timestamp intake run CPU-only. IMPORTANT: mount your VR library at /data so file paths reported by HereSphere resolve here.</Overview>
   <Category>MediaApp:Video Tools:</Category>
-  <WebUI>http://[IP]:[PORT:8760]</WebUI>
+  <WebUI>http://[IP]:[PORT:8801]</WebUI>
   <TemplateURL/>
   <Icon/>
   <ExtraParams>--runtime=nvidia</ExtraParams>
@@ -18,7 +18,7 @@
   <DonateText/>
   <DonateLink/>
 
-  <Config Name="Flagging UI (WebUI)" Target="8760" Default="8760" Mode="tcp" Description="The real-time flagging web page." Type="Port" Display="always" Required="true" Mask="false">8760</Config>
+  <Config Name="Flagging UI (WebUI)" Target="8801" Default="8801" Mode="tcp" Description="The real-time flagging web page." Type="Port" Display="always" Required="true" Mask="false">8801</Config>
   <Config Name="Timestamp server intake" Target="23573" Default="23573" Mode="tcp" Description="HereSphere's timestamp server connects IN here and pushes playback. Set HereSphere's timestamp server to this server's LAN IP : this port." Type="Port" Display="always" Required="true" Mask="false">23573</Config>
 
   <Config Name="Config / data" Target="/config" Default="/mnt/user/appdata/peaks-vr" Mode="rw" Description="Embedding cache, ❤️ labels, trained models, and DINOv2/CLIP model downloads." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/peaks-vr</Config>

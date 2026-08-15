@@ -1,7 +1,7 @@
 # peaks-vr — one-command run.
 #
 #   docker compose up -d
-#   → flagging UI at http://<this-host>:8760
+#   → flagging UI at http://<this-host>:8801
 #   → set HereSphere's timestamp server to <this-host-LAN-IP>:23573
 #
 # Edit MEDIA below to point at your VR library, then in the container use
@@ -17,7 +17,7 @@ services:
     container_name: peaks-vr
     restart: unless-stopped
     ports:
-      - "8760:8760"     # flagging web UI
+      - "8801:8801"     # flagging web UI
       - "23573:23573"   # HereSphere timestamp-server intake
     volumes:
       - ./config:/config          # cache, labels, models, model downloads
