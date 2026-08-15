@@ -37,6 +37,10 @@ from .scoring import make_similarity_scorer
 
 DEFAULT_CACHE = "cache/embeddings"
 
+# Model name → cache subdirectory (the embedder's canonical name). Lets score/
+# recommend resolve the cache without instantiating a torch-heavy embedder.
+_CANONICAL_MODEL = {"fake": "fake", "dino": "dinov2", "clip": "clip"}
+
 
 def scene_from_path(path: str) -> Scene:
     """Build a minimal :class:`Scene` from a local file path.
@@ -173,6 +177,62 @@ def cmd_probe(args) -> int:
     return 0
 
 
+def cmd_recommend(args) -> int:
+    """Turn ❤️ marks into a ranked playlist of similar moments (#3)."""
+    from .labels import LabelStore
+    from .recommend import recommend_from_labels
+
+    embedder_name = _CANONICAL_MODEL.get(args.model, args.model)
+    cache = EmbeddingCache(args.cache)
+    store = LabelStore(args.labels)
+    pos, _ = store.counts(args.profile)
+    if pos == 0:
+        print(f"  ✗ no ❤️ marks for profile '{args.profile}' in {args.labels} — "
+              f"flag some moments first (peaks-vr flag)", file=sys.stderr)
+        return 1
+    scoring = ScoringConfig(
+        high=args.high, low=args.low, min_duration=args.min_duration,
+        merge_gap=args.merge_gap, max_duration=args.max_duration, pad=args.pad,
+    )
+    playlist = recommend_from_labels(
+        cache, store, embedder_name, args.profile, scoring,
+        limit=args.limit, exclude_seed_scenes=args.exclude_seeds,
+    )
+    if not playlist.moments:
+        print("  · no moments cleared the similarity threshold — try lowering "
+              "--high/--low, or embed more scenes", file=sys.stderr)
+    for i, m in enumerate(playlist.moments, 1):
+        name = (m.path or m.key).split("/")[-1].split("\\")[-1]
+        print(f"  {i:>3}. {name}  {m.start:7.1f}–{m.end:7.1f}s  "
+              f"(score {m.score:.3f})")
+    print(f"\nrecommend: {len(playlist)} moments from {pos} liked "
+          f"(profile '{args.profile}')")
+    if args.out:
+        playlist.save(args.out)
+        print(f"  → wrote {args.out}")
+    return 0
+
+
+def cmd_dj(args) -> int:
+    """Play a playlist back-to-back in the headset (#4)."""
+    from .dj import DJ, play_playlist
+    from .recommend import Playlist
+
+    playlist = Playlist.load(args.playlist)
+    if args.dry_run or not args.host:
+        DJ(player=None).dry_run(playlist)  # player unused by dry_run
+        if not args.host and not args.dry_run:
+            print("\n  (no --host given — showed the set without playing. Add "
+                  "--host <headset-ip> to play it.)", file=sys.stderr)
+        return 0
+    print(f"DJ: playing {len(playlist)} moments on {args.host}:{args.port}"
+          f"{' (looping)' if args.loop else ''}…")
+    played = play_playlist(playlist, args.host, args.port,
+                           byteorder=args.byteorder, loop=args.loop)
+    print(f"\nDJ: played {played} moment(s)")
+    return 0
+
+
 def cmd_flag(args) -> int:
     """Launch the real-time flagging web UI (README feature #2)."""
     from .web.flagging import run, run_demo
@@ -262,6 +322,36 @@ def build_parser() -> argparse.ArgumentParser:
     fl.add_argument("--demo", action="store_true",
                     help="run with a synthetic feed — no headset required")
     fl.set_defaults(func=cmd_flag)
+
+    rc = sub.add_parser("recommend", help="turn ❤️ marks into a ranked playlist "
+                        "of similar moments (#3)")
+    rc.add_argument("--labels", default="labels.json",
+                    help="labels JSON with your ❤️ marks (default: labels.json)")
+    rc.add_argument("--profile", default="apex",
+                    help="taste profile to recommend for (default: apex)")
+    rc.add_argument("--limit", type=int, default=50,
+                    help="max moments in the playlist (default: 50)")
+    rc.add_argument("--exclude-seeds", action="store_true",
+                    help="leave out the scenes your likes came from (new only)")
+    rc.add_argument("--out", help="write the playlist to this JSON file")
+    rc.add_argument("--high", type=float, default=ScoringConfig.high)
+    rc.add_argument("--low", type=float, default=ScoringConfig.low)
+    rc.add_argument("--min-duration", type=float, default=ScoringConfig.min_duration)
+    rc.add_argument("--merge-gap", type=float, default=ScoringConfig.merge_gap)
+    rc.add_argument("--max-duration", type=float, default=ScoringConfig.max_duration)
+    rc.add_argument("--pad", type=float, default=ScoringConfig.pad)
+    rc.set_defaults(func=cmd_recommend)
+
+    dj = sub.add_parser("dj", help="play a playlist back-to-back in the headset (#4)")
+    dj.add_argument("playlist", help="playlist JSON from `peaks-vr recommend --out`")
+    dj.add_argument("--host", help="headset IP (omit for a dry-run preview)")
+    dj.add_argument("--port", type=int, default=23554,
+                    help="HereSphere remote port (default: 23554)")
+    dj.add_argument("--byteorder", default="big", choices=["big", "little"])
+    dj.add_argument("--loop", action="store_true", help="repeat until interrupted")
+    dj.add_argument("--dry-run", action="store_true",
+                    help="print the set without playing")
+    dj.set_defaults(func=cmd_dj)
     return p
 
 
