@@ -29,7 +29,7 @@ web = [
     "fastapi>=0.110",   # real-time flagging UI + explorer API
     "uvicorn>=0.27",    # ASGI server
     "python-multipart", # form/file uploads (reference stills)
-    "websockets>=12",   # HereSphere / DeoVR remote-control channel
+    # The HereSphere/DeoVR remote is plain TCP (stdlib socket) — no extra dep.
 ]
 dev = [
     "pytest>=7",      # the offline test suite (no torch/ffmpeg/Stash needed)

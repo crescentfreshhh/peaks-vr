@@ -1,79 +1,123 @@
 # HereSphere API — Phase 0 research
 
-> **Status: to be filled in.** This is the Phase-0 (no-code) research template.
-> Everything novel in peaks-vr branches on the answers here, so pin them down
-> before building the flagging UI (#2) or the DJ (#4). See the README's
-> "The linchpin" section.
+> **Status: researched from documentation + open-source clients; awaiting one
+> on-device confirmation run.** This is the README's "linchpin": everything
+> novel in peaks-vr depends on reading the currently-playing file + timecode and
+> sending seek / load-next commands to HereSphere. Both are **supported**.
 
-The load-bearing questions:
+The two load-bearing questions and their answers:
 
 1. **Can an external program read the currently-playing file + timecode, live?**
-   → gates real-time moment flagging.
+   → **Yes.** The player streams a status packet ~once per second containing
+   `path` and `currentTime`. Gates real-time moment flagging (#2).
 2. **Can it accept seek / load-next commands?**
-   → gates sequential moment playback (the "VR DJ").
+   → **Yes.** The client sends the same packet shape back with `currentTime`
+   (seek) or `path` (load). Gates sequential moment playback, the "VR DJ" (#4).
 
-HereSphere exposes an HTTP API (how it ingests libraries) and is broadly
-**DeoVR remote-control compatible** — DeoVR's remote is a documented WebSocket
-that streams `currentTime` / `path` / `playing` and accepts seek/play commands.
-The goal of this doc is to confirm the exact surface against the real app.
+Because live current-time **is** externally readable, the bookmark fallback the
+README worried about is **not needed**.
 
-The scaffold client that these findings complete lives in
-[`src/peaks_vr/heresphere.py`](../src/peaks_vr/heresphere.py).
-
----
-
-## Read surface (gates real-time flagging)
-
-- [ ] Transport (WebSocket? HTTP polling?) and endpoint / port
-      _(DeoVR default is `ws://<host>:23554`; confirm for HereSphere)_
-- [ ] How is the **current file path** reported? Field name, format, absolute vs
-      library-relative?
-- [ ] How is the **current timecode** reported? Field name, units, update cadence?
-- [ ] Is `playing` / paused state exposed?
-- [ ] Latency / update frequency of the stream (matters for reaction-lag scrub).
-
-**Findings:**
-
-```
-(paste observed messages / request+response here)
-```
-
-## Control surface (gates DJ playback)
-
-- [ ] **Seek** within the current file — command shape, units.
-- [ ] **Load** a specific file (and start offset) — command shape. Confirms each
-      moment can play its own source in its native projection (README #4/#6).
-- [ ] Play / pause commands.
-- [ ] Any acknowledgement / error responses to commands?
-
-**Findings:**
-
-```
-(paste observed commands / responses here)
-```
-
-## Fallback: if live current-time is NOT externally readable
-
-Real-time flagging needs a way to anchor a ❤️ mark to (scene, time). If the
-playhead can't be read live:
-
-- [ ] Can peaks-vr **drop a HereSphere bookmark** at "now" and **read it back**
-      (with its timecode) shortly after?
-- [ ] Bookmark write path, read path, and the lag involved.
-
-This is the fallback `RemoteClient.read_state` would select. Document it here
-so the client can implement the right path.
-
-**Findings:**
-
-```
-(notes)
-```
+HereSphere is **DeoVR remote-control compatible**, so it speaks the DeoVR remote
+protocol below. The implementation of this spec lives in
+[`src/peaks_vr/heresphere.py`](../src/peaks_vr/heresphere.py); the on-device
+check is [`peaks-vr probe`](../src/peaks_vr/cli.py).
 
 ---
 
-## References
+## The remote-control protocol (DeoVR-compatible)
 
-- DeoVR remote-control protocol (WebSocket `currentTime`/`path`/`playing`).
-- HereSphere's HTTP library/API documentation.
-- `stash-vr` — for how it talks to the same ecosystem.
+### Transport
+- **Plain TCP** to the player, default port **`23554`**.
+- The player IP is shown in its network/WiFi settings.
+
+### Framing
+Every message is a **4-byte unsigned length prefix** (big-endian — the
+documented convention) followed by that many bytes of **UTF-8 JSON**.
+
+```
+[ 4 bytes: length N ][ N bytes: UTF-8 JSON ]
+```
+
+A prefix of **`0`** (no body) is a **keep-alive ping**.
+
+### Keep-alive
+Both sides send a packet at least **every ~1 second**. If the player receives
+nothing for **~3 seconds**, it closes the connection. A `length=0` ping counts.
+(`RemoteClient` runs a background pinger every 1s.)
+
+### Player → client: status packet (~1 Hz)
+```json
+{
+  "path": "D:/vr/scene_180_sbs.mp4",
+  "duration": 123.45,
+  "currentTime": 10.5,
+  "playbackSpeed": 1.0,
+  "playerState": 0
+}
+```
+| field           | meaning                                             |
+| --------------- | --------------------------------------------------- |
+| `path`          | file the headset is playing → look up cached scene  |
+| `currentTime`   | playhead in seconds → the ❤️ mark anchor            |
+| `duration`      | total length in seconds                             |
+| `playbackSpeed` | playback rate (1.0 = normal)                        |
+| `playerState`   | **0 = playing, 1 = paused**                         |
+
+### Client → player: commands
+Send the **same framed JSON**; include only the fields you want to change:
+| goal                | payload                          |
+| ------------------- | -------------------------------- |
+| seek                | `{"currentTime": 42.0}`          |
+| load a file (DJ)    | `{"path": "...", "currentTime": 0}` |
+| play / pause        | `{"playerState": 0}` / `{"playerState": 1}` |
+| change speed        | `{"playbackSpeed": 1.5}`         |
+
+Loading a new `path` is what makes the DJ work: **each moment plays its own
+source file in its native projection**, so HereSphere re-detects format per clip
+and any mix of projections can play back-to-back (README #4/#6).
+
+---
+
+## Headset setup (one-time)
+1. In HereSphere, enable **remote control** (the DeoVR-compatible remote server).
+2. Note the headset's **IP address** (network settings).
+3. Make sure the headset and the computer running peaks-vr are on the **same
+   network** and the port isn't firewalled.
+
+---
+
+## Confirm on device (one command)
+With HereSphere **playing a video** and remote control enabled:
+
+```bash
+peaks-vr probe --host <headset-ip>
+```
+Live `path` + `currentTime` lines scrolling by confirm the **read** surface.
+Add a control test:
+```bash
+peaks-vr probe --host <headset-ip> --test-seek 30
+```
+and watch the headset jump to 30s to confirm the **control** surface.
+
+### Checklist — confirmed vs. still to verify on device
+- [x] Transport = TCP, length-prefixed UTF-8 JSON (from docs + clients)
+- [x] Status packet streams `path` + `currentTime` live (read surface)
+- [x] `currentTime` / `path` commands seek / load (control surface)
+- [ ] **Exact port** on HereSphere (23554 assumed) — confirm via `probe`
+- [ ] **Length-prefix endianness** (big-endian assumed) — if `probe` sees no
+      packets, retry `--byteorder little`
+- [ ] Remote-control toggle location in the current HereSphere build
+
+Paste the `probe` output back and these get checked off.
+
+---
+
+## Sources
+- [DeoVR adds remote control API](https://deovr.com/blog/7-deovr-adds-remote-control-api)
+  (protocol announcement) — full spec at `https://deovr.com/app/doc#remote-control`.
+- [xbvr issue #288 — Support DeoVR remote control protocol](https://github.com/xbapps/xbvr/issues/288)
+  (port 23554, length-prefixed JSON, keep-alive timing).
+- [philpw99/DeoVR-Remote](https://github.com/philpw99/DeoVR-Remote) — a working
+  TCP remote client.
+- [ecal-mid/DEOVR-Remote-Control](https://github.com/ecal-mid/DEOVR-Remote-Control)
+  — status fields + command set.

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 from .cache import EmbeddingCache
@@ -121,6 +122,57 @@ def cmd_score(args) -> int:
     return 0
 
 
+def cmd_probe(args) -> int:
+    """Phase-0 on-device check: connect to HereSphere's remote and print live
+    playback state, optionally testing a seek. This is the single command the
+    user runs against a real headset to confirm the read + control surface."""
+    from .heresphere import RemoteClient, RemoteError
+
+    print(f"connecting to {args.host}:{args.port} "
+          f"({args.byteorder}-endian framing)…", file=sys.stderr)
+    client = RemoteClient(args.host, args.port, byteorder=args.byteorder)
+    try:
+        client.connect()
+    except RemoteError as exc:
+        print(f"  ✗ {exc}", file=sys.stderr)
+        print("  Is HereSphere/DeoVR playing with remote control enabled, and "
+              "reachable at that IP?", file=sys.stderr)
+        return 1
+
+    seen = 0
+    deadline = time.monotonic() + args.seconds
+    tested_seek = False
+    try:
+        for st in client.monitor():
+            seen += 1
+            state = "▶ playing" if st.playing else "⏸ paused"
+            dur = f"/{st.duration:.1f}s" if st.duration else ""
+            print(f"  [{seen:>3}] {state}  t={st.current_time:7.2f}s{dur}  "
+                  f"path={st.path!r}")
+            if args.test_seek is not None and not tested_seek and seen >= 2:
+                print(f"  → sending test seek to {args.test_seek:g}s…",
+                      file=sys.stderr)
+                client.seek(args.test_seek)
+                tested_seek = True
+            if time.monotonic() >= deadline:
+                break
+    except RemoteError as exc:
+        print(f"  ✗ {exc}", file=sys.stderr)
+        return 1
+    finally:
+        client.close()
+
+    if seen == 0:
+        print("  ✗ connected but received no status packets. If the connection "
+              "held, the length-prefix endianness may be flipped — retry with "
+              f"--byteorder {'little' if args.byteorder == 'big' else 'big'}.",
+              file=sys.stderr)
+        return 1
+    print(f"\nprobe: read {seen} status packet(s) — the READ surface works. "
+          f"{'A test seek was sent — confirm the headset jumped (CONTROL surface).' if tested_seek else 'Add --test-seek 30 to also test control.'}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="peaks-vr", description=__doc__.splitlines()[0])
     p.add_argument("--cache", default=DEFAULT_CACHE,
@@ -151,6 +203,20 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--max-duration", type=float, default=ScoringConfig.max_duration)
     s.add_argument("--pad", type=float, default=ScoringConfig.pad)
     s.set_defaults(func=cmd_score)
+
+    pr = sub.add_parser("probe", help="Phase-0: check the HereSphere remote "
+                        "control surface on a real headset")
+    pr.add_argument("--host", required=True,
+                    help="headset / player IP address (from its WiFi settings)")
+    pr.add_argument("--port", type=int, default=23554,
+                    help="remote-control TCP port (default: 23554)")
+    pr.add_argument("--seconds", type=float, default=10.0,
+                    help="how long to listen for status packets (default: 10)")
+    pr.add_argument("--byteorder", default="big", choices=["big", "little"],
+                    help="length-prefix endianness (default: big)")
+    pr.add_argument("--test-seek", type=float, default=None, metavar="T",
+                    help="also send one seek to T seconds, to test control")
+    pr.set_defaults(func=cmd_probe)
     return p
 
 
