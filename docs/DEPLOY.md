@@ -86,14 +86,14 @@ one-time cost per file, **resumable**, and independent of HereSphere.
    fail the file. To actually get GPU decode, ensure the unraid **Nvidia Driver**
    plugin is installed and the container has `--runtime=nvidia`.)
 
-**How long should embedding take?** VR sampling seeks to ~one keyframe per sample
-and decodes it on the **CPU** (fast — a fraction of a second each), while the
-**AI model runs on the GPU** (that's the heavy part). Expect roughly **2–4 min**
-per 20–40 min 8K scene. Note: hardware (NVDEC) decode is deliberately *not* used
-for the per-sample de-warp — spinning up the GPU decoder for every single frame
-costs far more than it saves, so CPU decode is actually faster here. Levers:
-raise the **Interval** (fewer samples), or use a lighter `PEAKS_VR_MODEL`. The
-Embed tab shows the current file's elapsed seconds so you can see it progressing.
+**How long should embedding take?** VR sampling opens each file **once**, decodes
+**keyframes only** in a single process, and de-warps them in-process (the same
+one-decoder-per-scene approach that makes 2D peaks fast) — then the **AI model
+runs on the GPU**. Expect roughly **1–2 min** per 20–40 min 8K scene. Levers:
+raise the **Interval** (fewer samples) or use a lighter `PEAKS_VR_MODEL`. The
+**Decode** dropdown affects only the flat (non-VR) path; VR de-warp always
+decodes in-process. The Embed tab shows the current file's elapsed seconds so you
+can watch it progress.
 
 ### ② Flag moments (needs HereSphere playback)
 

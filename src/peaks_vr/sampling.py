@@ -216,6 +216,99 @@ def _sparse_extract_worker(
     )
 
 
+def _sparse_dewarp_worker(
+    path: str, interval: float, crop: int, out_path: str, filter_chain: str
+) -> None:
+    """Runs in a CHILD process: like `_sparse_extract_worker`, but applies the VR
+    de-warp (one-eye crop → v360 → model resize/crop) to each decoded keyframe
+    via a SINGLE in-process libavfilter graph. The file is opened ONCE and only
+    keyframes are decoded, so cost scales with samples — the fast path that makes
+    2D peaks quick, now with the reprojection. `filter_chain` is a comma-joined
+    ffmpeg filtergraph ending at the model's crop×crop input geometry."""
+    import av
+    import numpy as np
+
+    try:
+        av.logging.set_level(av.logging.ERROR)
+    except Exception:
+        pass
+
+    max_total_errors = 60
+    max_scene_hours = 12.0
+    times: list[float] = []
+    frames: list = []
+
+    with av.open(path) as container:
+        if not container.streams.video:
+            raise RuntimeError(f"no video stream in {path}")
+        stream = container.streams.video[0]
+        stream.thread_type = "AUTO"
+        try:  # decode keyframes only — the big speedup; seeks land on them
+            stream.codec_context.skip_frame = "NONKEY"
+        except (AttributeError, ValueError):
+            pass
+
+        tb = stream.time_base
+        if stream.duration and tb:
+            duration = float(stream.duration * tb)
+        elif container.duration:
+            duration = container.duration / av.time_base
+        else:
+            raise RuntimeError(f"could not determine duration of {path}")
+        if duration <= 0 or duration > max_scene_hours * 3600:
+            raise RuntimeError(f"implausible duration {duration:.0f}s for {path}")
+
+        graph = None  # built lazily once we have a frame for the buffer template
+        last_pts = None
+        total_errors = 0
+        t = 0.0
+        while t < duration:
+            target = t
+            t += interval
+            try:
+                container.seek(int(target / tb), stream=stream)
+                frame = next(container.decode(stream), None)
+            except StopIteration:
+                break
+            except Exception:
+                total_errors += 1
+                if total_errors >= max_total_errors:
+                    raise RuntimeError(f"{total_errors} decode errors in {path}")
+                continue
+            if frame is None:
+                break
+            if frame.pts is not None and last_pts is not None and frame.pts <= last_pts:
+                continue  # same keyframe as the previous sample
+            last_pts = frame.pts
+            ts = frame.time if frame.time is not None else target
+
+            if graph is None:
+                graph = av.filter.Graph()
+                node = graph.add_buffer(template=stream)
+                for spec in filter_chain.split(","):
+                    name, _, args = spec.partition("=")
+                    filt = graph.add(name.strip(), args.strip())
+                    node.link_to(filt)
+                    node = filt
+                sink = graph.add("buffersink")
+                node.link_to(sink)
+                graph.configure()
+
+            graph.push(frame)
+            out = graph.pull()
+            arr = out.to_ndarray(format="rgb24")  # ends at crop×crop from the chain
+            frames.append(np.ascontiguousarray(arr))
+            times.append(round(float(ts), 3))
+
+    if not times:
+        raise RuntimeError(f"no frames decoded for {path}")
+    np.savez(
+        out_path,
+        times=np.asarray(times, dtype=np.float32),
+        frames=np.stack(frames),
+    )
+
+
 class FrameSampler:
     def __init__(
         self,
@@ -423,10 +516,18 @@ class FrameSampler:
         interval streams a full decode over a pipe."""
         if self.mode == "sparse":
             if self.reproject is not None:
-                # VR: seek to each sample and de-warp that one frame with ffmpeg
-                # (PyAV sparse can't run the v360 filter). Sparse cost — one
-                # decode per sample, not the whole file — with the de-warp.
-                yield from self._iter_frames_dewarp_seek(
+                # VR: open the file ONCE, decode keyframes, and de-warp each in an
+                # in-process libavfilter graph (PyAV). One decoder per scene — no
+                # per-sample process spawn — so it's ~as fast as the flat 2D path.
+                # Falls back to the per-sample ffmpeg path only if `av` is absent.
+                try:
+                    import av  # noqa: F401
+                except ImportError:
+                    yield from self._iter_frames_dewarp_seek(
+                        path, resize_short=resize_short, crop=crop
+                    )
+                    return
+                yield from self._iter_frames_dewarp_inproc(
                     path, resize_short=resize_short, crop=crop
                 )
                 return
@@ -447,6 +548,58 @@ class FrameSampler:
             ":force_original_aspect_ratio=increase:flags=bicubic,"
             f"crop={crop}:{crop}"
         )
+
+    def _iter_frames_dewarp_inproc(self, path: str, *, resize_short: int, crop: int):
+        """VR de-warp at sparse cost, in ONE process: open the file once, decode
+        keyframes, and apply the v360 filtergraph in-process (PyAV). Runs in a
+        spawned child with a kill-timeout, like `_iter_frames_sparse`, so a
+        pathological file can't wedge the run."""
+        import multiprocessing as mp
+        import os
+        import tempfile
+
+        import numpy as np  # lazy
+
+        if self.interval <= 0:
+            return
+        filter_chain = self._dewarp_raw_vf(resize_short, crop)
+        fd, out_path = tempfile.mkstemp(suffix=".npz", prefix="peaks-vrdewarp-")
+        os.close(fd)
+        ctx = mp.get_context("spawn")  # fresh interpreter: no CUDA-fork hazards
+        proc = ctx.Process(
+            target=_sparse_dewarp_worker,
+            args=(path, self.interval, crop, out_path, filter_chain),
+        )
+        try:
+            proc.start()
+            proc.join(self.scene_timeout if self.scene_timeout else None)
+            if proc.is_alive():
+                proc.terminate()
+                proc.join(5)
+                if proc.is_alive():  # pragma: no cover - stubborn C loop
+                    proc.kill()
+                    proc.join()
+                raise SamplerError(
+                    f"VR de-warp sampling exceeded {self.scene_timeout:.0f}s on "
+                    f"{path} (corrupt/pathological file?) — killed"
+                )
+            if proc.exitcode != 0:
+                raise SamplerError(
+                    f"VR de-warp extraction failed for {path} "
+                    f"(worker exit {proc.exitcode})"
+                )
+            if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+                raise SamplerError(f"no frames produced for {path}")
+            with np.load(out_path) as data:
+                times = data["times"]
+                frames = data["frames"]
+            for i in range(len(times)):
+                yield float(times[i]), frames[i]
+        finally:
+            try:
+                os.unlink(out_path)
+            except OSError:  # pragma: no cover
+                pass
 
     def _iter_frames_dewarp_seek(self, path: str, *, resize_short: int, crop: int):
         """VR de-warp sampling with sparse cost: seek to each planned timestamp
