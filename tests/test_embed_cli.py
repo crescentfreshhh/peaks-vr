@@ -61,9 +61,11 @@ def test_dewarp_seek_builds_correct_ffmpeg_and_yields_frames(tmp_path, monkeypat
     assert [round(t) for t, _ in frames] == [0, 8]
     arr = frames[0][1]
     assert arr.shape == (224, 224, 3) and arr.dtype == np.uint8
-    # the ffmpeg command carries seek, NVDEC, the v360 de-warp, and rawvideo
     cmd = cmds[0]
-    assert "-ss" in cmd and "-hwaccel" in cmd and "cuda" in cmd
+    # per-sample seek is CPU-decoded even though the sampler has hwaccel="cuda":
+    # spinning up NVDEC per process costs far more than one CPU keyframe decode.
+    assert "-hwaccel" not in cmd
+    assert "-ss" in cmd
     assert "-noaccurate_seek" in cmd            # keyframe-only decode
     assert cmd.index("-ss") < cmd.index("-i")   # seek is an input option
     vf = cmd[cmd.index("-vf") + 1]
@@ -92,33 +94,19 @@ def test_grab_frame_injects_dewarp_when_reprojector_set(monkeypatch):
     assert "input=fisheye" in vf and "crop=iw:ih/2:0:0" in vf  # TB top eye
 
 
-def test_dewarp_seek_falls_back_to_cpu_when_hwaccel_fails(tmp_path, monkeypatch):
-    """If -hwaccel init fails (e.g. no libcuda), the frame is retried on CPU and
-    embedding still completes instead of failing the file."""
-    import subprocess as sp
-
+def test_dewarp_seek_never_uses_nvdec(tmp_path, monkeypatch):
+    """Even with hwaccel='cuda', the per-sample seek path decodes on CPU — one
+    NVDEC init per sample would dwarf a single 8K keyframe's CPU decode."""
     rep = Reprojector.for_format(detect("scene_180_sbs.mp4"))
     sampler = FrameSampler(interval_seconds=8.0, mode="sparse",
                            hwaccel="cuda", reproject=rep)
     monkeypatch.setattr(sampler, "probe_duration", lambda p: 12.0)
-
     cmds = []
+    monkeypatch.setattr(subprocess, "run", _fake_run_factory(cmds, crop=224))
 
-    def fake_run(cmd, capture_output=False, check=False, **kw):
-        cmds.append(cmd)
-        if "-hwaccel" in cmd:  # simulate "Cannot load libcuda.so.1"
-            raise sp.CalledProcessError(1, cmd, output=b"",
-                                        stderr=b"Cannot load libcuda.so.1")
-        buf = np.zeros(224 * 224 * 3, dtype=np.uint8).tobytes()
-        return types.SimpleNamespace(stdout=buf, stderr=b"", returncode=0)
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
     frames = list(sampler.iter_frames_raw("x.mp4", resize_short=256, crop=224))
-
-    assert len(frames) == 2                      # both samples decoded on CPU
-    # first cmd tried cuda; after the fallback, later cmds carry no -hwaccel
-    assert "-hwaccel" in cmds[0]
-    assert "-hwaccel" not in cmds[-1]
+    assert len(frames) == 2
+    assert all("-hwaccel" not in c for c in cmds)   # every sample CPU-decoded
 
 
 def test_grab_frame_no_dewarp_without_reprojector(monkeypatch):

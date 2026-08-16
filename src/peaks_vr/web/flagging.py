@@ -48,7 +48,7 @@ try:
     class EmbedBody(BaseModel):
         interval: float = 8.0
         vr: bool = True
-        hwaccel: str = "auto"
+        hwaccel: str = "none"   # VR de-warp decodes per-frame; CPU beats NVDEC init
         assume: str | None = None
 except ImportError:  # pragma: no cover - only when fastapi/pydantic absent
     MarkBody = None  # type: ignore
@@ -440,7 +440,7 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
         try:
             jobs.start("retry", lambda job, mgr: embed_job(
                 job, mgr, media_root=media_root or "", cache_root=cache_root,
-                model=model, interval=8.0, vr=True, hwaccel="auto",
+                model=model, interval=8.0, vr=True, hwaccel="none",
                 assume=assume_default, paths=paths))
         except RuntimeError as exc:
             raise HTTPException(409, str(exc))

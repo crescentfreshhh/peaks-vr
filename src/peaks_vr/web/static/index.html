@@ -119,13 +119,13 @@
 
     <div class="card">
       <h2>Embed</h2>
-      <div class="row row3">
+      <div class="row">
         <div><label class="f">Interval (s)</label><input id="emInterval" type="number" value="8" min="1"></div>
-        <div><label class="f">GPU decode</label>
-          <select id="emHw"><option value="auto">auto</option><option value="cuda">cuda</option><option value="none">none (CPU)</option></select></div>
         <div><label class="f">VR de-warp</label>
           <select id="emVr"><option value="1">on</option><option value="0">off (flat)</option></select></div>
       </div>
+      <div class="note">Frames are decoded on the CPU (fast per keyframe); the AI
+        model runs on the GPU. Larger interval = fewer samples = faster.</div>
       <div class="row" style="margin-top:12px">
         <button class="primary" id="emStart" style="flex:2">Start embedding</button>
         <button id="emStop" style="flex:1" disabled>Stop</button>
@@ -230,7 +230,7 @@ $('#pvGo').onclick = async () => {
   $('#pvGo').disabled=false;
 };
 $('#emStart').onclick = async () => {
-  const body={interval:parseFloat($('#emInterval').value), vr:$('#emVr').value==='1', hwaccel:$('#emHw').value, assume:$('#assume').value};
+  const body={interval:parseFloat($('#emInterval').value), vr:$('#emVr').value==='1', hwaccel:'none', assume:$('#assume').value};
   const r=await fetch('/api/embed/start',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
   if(r.ok){ $('#emProgWrap').classList.remove('hide'); pollEmbed(); }
   else { const e=await r.json().catch(()=>({detail:r.statusText})); alert(e.detail||'could not start'); }

@@ -425,8 +425,9 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--vr", action="store_true",
                    help="VR de-warp: detect format + reproject one eye to a flat "
                         "viewport before embedding (needs ffmpeg on PATH)")
-    e.add_argument("--hwaccel", default="auto", choices=["none", "auto", "cuda"],
-                   help="GPU-assisted decode (NVDEC): auto (default), cuda, or none")
+    e.add_argument("--hwaccel", default="none", choices=["none", "auto", "cuda"],
+                   help="hardware decode for the flat/interval path (default none; "
+                        "the VR de-warp path always decodes per-frame on CPU)")
     e.add_argument("--assume", default="180_sbs",
                    help="format to assume for files with no filename hint "
                         "(e.g. 180_sbs, 180_tb, mkx200_sbs; '' to skip them)")

@@ -86,14 +86,14 @@ one-time cost per file, **resumable**, and independent of HereSphere.
    fail the file. To actually get GPU decode, ensure the unraid **Nvidia Driver**
    plugin is installed and the container has `--runtime=nvidia`.)
 
-**How long should embedding take?** With the **GPU working** (NVDEC decode +
-CUDA model), a typical 20–40 min 8K scene is ~**1–3 minutes**. On **CPU only**
-(no GPU reaching the container), expect ~**3–6 minutes** per 8K scene — and if you
-see 20+ minutes, the GPU almost certainly isn't active. Levers if you're
-CPU-bound: get the NVIDIA runtime working (the real fix — check `nvidia-smi` in
-the container console), raise the **Interval** (fewer samples), or use a lighter
-`PEAKS_VR_MODEL`. The Embed tab shows the current file's elapsed seconds so you
-can see a scene is progressing, not stuck.
+**How long should embedding take?** VR sampling seeks to ~one keyframe per sample
+and decodes it on the **CPU** (fast — a fraction of a second each), while the
+**AI model runs on the GPU** (that's the heavy part). Expect roughly **2–4 min**
+per 20–40 min 8K scene. Note: hardware (NVDEC) decode is deliberately *not* used
+for the per-sample de-warp — spinning up the GPU decoder for every single frame
+costs far more than it saves, so CPU decode is actually faster here. Levers:
+raise the **Interval** (fewer samples), or use a lighter `PEAKS_VR_MODEL`. The
+Embed tab shows the current file's elapsed seconds so you can see it progressing.
 
 ### ② Flag moments (needs HereSphere playback)
 

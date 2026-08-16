@@ -463,10 +463,13 @@ class FrameSampler:
         times = plan_timestamps(duration, self.interval)
         vf = self._dewarp_raw_vf(resize_short, crop)
         nbytes = crop * crop * 3
-        # `hw` may drop to "" the first time NVDEC fails to init (e.g. no
-        # libcuda in the container) — a pure optimization, so we fall back to CPU
-        # decode for this scene rather than failing every file.
-        hw = self.hwaccel
+        # ALWAYS decode on CPU here, even if a GPU is available. This path spawns
+        # one ffmpeg per sample, and a hardware decoder (NVDEC) allocates a large
+        # context and initializes on EVERY process — seconds of setup to decode a
+        # single 8K keyframe that the CPU handles in ~0.2s. Per-sample NVDEC is a
+        # net loss, so we skip it; the embedding model still runs on the GPU.
+        # (`hw` stays a variable only so the fallback branch below is a no-op.)
+        hw = ""
 
         def _cmd(t: float, hwaccel: str) -> list[str]:
             args = ["-hwaccel", hwaccel] if hwaccel else []
