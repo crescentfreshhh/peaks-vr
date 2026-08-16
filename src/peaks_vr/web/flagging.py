@@ -382,10 +382,33 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
         return {"embedded": _cache_count(), "model": model,
                 "running": jobs.running}
 
+    @app.get("/api/qc")
+    def qc(limit: int = 5000):
+        """Every video with its QC status — embedded / failed / neither — so the
+        UI can render a whole-library contact sheet. `embedded` reflects a cache
+        hit under this model (same key the embedder writes: ``path_key``)."""
+        from ..cache import EmbeddingCache
+        from ..cli import iter_video_files
+        if not media_root:
+            return {"count": 0, "files": []}
+        files = iter_video_files([media_root])
+        try:
+            embedded = set(EmbeddingCache(cache_root).keys(model_dir))
+        except Exception:
+            embedded = set()
+        fails = {e.get("path"): e.get("error", "")
+                 for e in failure_log_for(cache_root).entries() if e.get("path")}
+        out = []
+        for f in files[:limit]:
+            out.append({"name": Path(f).name, "path": f,
+                        "embedded": path_key(f) in embedded,
+                        "failed": f in fails, "error": fails.get(f, "")})
+        return {"count": len(files), "files": out}
+
     @app.get("/api/preview")
-    def preview(path: str, time: float = 60.0, fov: float = 100.0,
-                pitch: float = 0.0, yaw: float = 0.0, hwaccel: str = "none",
-                assume: str | None = None):
+    def preview(path: str, time: float = 60.0, frac: float | None = None,
+                fov: float = 100.0, pitch: float = 0.0, yaw: float = 0.0,
+                hwaccel: str = "none", assume: str | None = None):
         from ..reprojection import Reprojector
         from ..sampling import FrameSampler
         from ..vr_format import detect
@@ -400,6 +423,13 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
         if not fmt.is_known:
             raise HTTPException(422, f"VR format not recognized for "
                                 f"{Path(real).name} — set an 'assume' format")
+        # A fraction of the file's duration lands a QC thumbnail mid-file
+        # regardless of clip length (a fixed time can overrun a short clip).
+        if frac is not None:
+            try:
+                time = max(0.0, min(float(frac), 0.999)) * probe.probe_duration(real)
+            except Exception:
+                pass  # unknown duration — fall back to the absolute `time`
         rep = Reprojector.for_format(fmt, viewport_fov_deg=fov, pitch=pitch, yaw=yaw)
         s = FrameSampler(hwaccel=hw, reproject=rep)
         try:

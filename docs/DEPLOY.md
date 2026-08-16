@@ -59,7 +59,7 @@ the GPU.)
 
 ## Everything runs from the WebGUI
 
-Open **http://\<server-ip\>:8801**. Two tabs — no console needed.
+Open **http://\<server-ip\>:8801**. Three tabs — no console needed.
 
 ### ① Embed library (do this first, no headset required)
 
@@ -109,7 +109,27 @@ old 180 s cap was too low and could kill legitimate files — 900 s is the new
 default. Set it per run in the Embed tab's **Per-scene timeout (s)** field (0 =
 no limit), or via `PEAKS_SCENE_TIMEOUT` for CLI embeds.
 
-### ② Flag moments (needs HereSphere playback)
+### ② QC the embeds (no headset required)
+
+After a run, spot-check the whole library at a glance. The **QC embeds** tab
+shows a contact sheet — for every video, **two frames** (early + late), de-warped
+with the *exact same transform the embedder used* — plus a status badge:
+
+- **embedded** (green) — a cache entry exists for this file under the current
+  model.
+- **failed** (red) — hover for the ffmpeg error; also actionable from the
+  Failed-embeds card on the Embed tab.
+- **not embedded** (grey) — discovered but not yet processed.
+
+Read the thumbnails: each should look like a **normal forward-facing view**. If
+one is **fisheye, split down the middle, or stretched**, that file's format
+wasn't detected correctly — the embeddings for it are meaningless. Fix its
+filename hint (or the **assume** format on the Embed tab) and re-embed it. Use the
+filter chips (All / Embedded / Failed / Not embedded) to narrow the grid, and
+click any thumbnail to enlarge it. Thumbnails load lazily as you scroll, so a
+large library doesn't render every frame at once.
+
+### ③ Flag moments (needs HereSphere playback)
 
 1. Find **this server's LAN IP** (unraid shows it; else `ip addr`/`ipconfig`),
    e.g. `192.168.1.50`.

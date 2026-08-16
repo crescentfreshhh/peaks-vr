@@ -67,6 +67,28 @@
   ul.marks{list-style:none;margin:0;padding:0;max-height:200px;overflow:auto}
   ul.marks li{display:flex;justify-content:space-between;padding:6px 2px;border-bottom:1px solid var(--line);font-size:13px;font-variant-numeric:tabular-nums}
   ul.marks li span{color:var(--dim)}
+  /* qc tab */
+  body.wide .wrap{max-width:1180px}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 4px}
+  .chip{font-size:12px;padding:5px 11px;border-radius:20px;border:1px solid var(--line);
+    background:var(--panel2);color:var(--dim);cursor:pointer;font-weight:600}
+  .chip.on{border-color:var(--accent);color:var(--fg)}
+  .qcgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;margin-top:12px}
+  .qccard{background:var(--panel2);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .qcthumbs{display:flex;background:#000;aspect-ratio:2/1}
+  .qcthumbs img{width:50%;height:100%;object-fit:cover;cursor:zoom-in;display:block;
+    border:0;background:#000}
+  .qcthumbs img.broken{cursor:default}
+  .qcmeta{display:flex;justify-content:space-between;align-items:center;gap:6px;padding:6px 8px}
+  .qcname{font-size:11px;line-height:1.35;word-break:break-all;color:var(--fg)}
+  .badge{font-size:10px;padding:2px 7px;border-radius:20px;white-space:nowrap;font-weight:700}
+  .badge.ok{color:var(--good);border:1px solid var(--good)}
+  .badge.fail{color:var(--love);border:1px solid var(--love);cursor:help}
+  .badge.none{color:var(--dim);border:1px solid var(--line)}
+  #qcLightbox{position:fixed;inset:0;background:rgba(0,0,0,.9);display:none;
+    align-items:center;justify-content:center;cursor:zoom-out;z-index:50;padding:24px}
+  #qcLightbox img{max-width:100%;max-height:100%;object-fit:contain;border-radius:8px}
+  #qcLightbox.on{display:flex}
 </style>
 </head>
 <body>
@@ -76,7 +98,8 @@
 
   <div class="tabs">
     <div class="tab on" data-tab="embed" id="tab-embed">① Embed library</div>
-    <div class="tab" data-tab="flag" id="tab-flag">② Flag moments</div>
+    <div class="tab" data-tab="qc" id="tab-qc">② QC embeds</div>
+    <div class="tab" data-tab="flag" id="tab-flag">③ Flag moments</div>
   </div>
 
   <!-- ================= EMBED TAB ================= -->
@@ -160,6 +183,28 @@
     </div>
   </section>
 
+  <!-- ================= QC TAB ================= -->
+  <section id="pane-qc" class="hide">
+    <div class="card">
+      <h2>Quality control — sample every embed</h2>
+      <div class="mut">Two frames per video (early + late), de-warped with the
+        <b>exact same transform the embedder used</b>. If a thumbnail looks
+        fisheye, split down the middle, or stretched, that file's embeddings are
+        bad — fix its format hint / <b>assume</b> on the Embed tab and re-embed it.
+        Thumbnails load as you scroll. Click one to enlarge.</div>
+      <div class="chips" id="qcChips">
+        <div class="chip on" data-f="all">All</div>
+        <div class="chip" data-f="ok">Embedded</div>
+        <div class="chip" data-f="fail">Failed</div>
+        <div class="chip" data-f="none">Not embedded</div>
+        <div style="flex:1"></div>
+        <button id="qcReload" style="padding:5px 11px">↻ Reload</button>
+      </div>
+      <div class="mut" id="qcSummary">…</div>
+      <div class="qcgrid" id="qcGrid"></div>
+    </div>
+  </section>
+
   <!-- ================= FLAG TAB ================= -->
   <section id="pane-flag" class="hide">
     <div class="card">
@@ -186,16 +231,22 @@
   </section>
 </div>
 
+<div id="qcLightbox"><img alt="frame"></div>
+
 <script>
 const $ = s => document.querySelector(s);
 
 // ---------- tabs ----------
+let qcLoaded = false;
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
   document.querySelectorAll('.tab').forEach(x => x.classList.remove('on'));
   t.classList.add('on');
   const name = t.dataset.tab;
   $('#pane-embed').classList.toggle('hide', name!=='embed');
+  $('#pane-qc').classList.toggle('hide', name!=='qc');
   $('#pane-flag').classList.toggle('hide', name!=='flag');
+  document.body.classList.toggle('wide', name==='qc');   // roomier contact sheet
+  if(name==='qc' && !qcLoaded){ loadQc(); }
 });
 
 function fmt(t){ if(t==null) return '—'; const m=Math.floor(t/60), s=(t%60); return `${m}:${s.toFixed(1).padStart(4,'0')}`; }
@@ -280,6 +331,58 @@ $('#failRetry').onclick = async () => {
   else alert(j.reason||'nothing to retry');
 };
 $('#failClear').onclick = async () => { await fetch('/api/failures/clear',{method:'POST'}); loadFailures(); };
+
+// ================= QC =================
+let qcFilter='all';
+function qcAssume(){ return $('#assume') ? $('#assume').value : ''; }
+function qcThumb(path, frac){
+  const a = encodeURIComponent(qcAssume());
+  const img = document.createElement('img');
+  img.loading='lazy'; img.decoding='async';
+  img.src=`/api/preview?path=${encodeURIComponent(path)}&frac=${frac}&assume=${a}`;
+  img.onerror=()=>{ img.classList.add('broken'); img.removeAttribute('src'); img.alt='no frame'; };
+  img.onclick=()=>{ if(img.classList.contains('broken')||!img.currentSrc) return;
+    $('#qcLightbox img').src=img.currentSrc; $('#qcLightbox').classList.add('on'); };
+  return img;
+}
+function qcApplyFilter(){
+  document.querySelectorAll('#qcGrid .qccard').forEach(c=>{
+    c.classList.toggle('hide', qcFilter!=='all' && c.dataset.st!==qcFilter);
+  });
+}
+async function loadQc(){
+  const grid=$('#qcGrid'); grid.innerHTML=''; $('#qcSummary').textContent='loading library…';
+  let data;
+  try{ data = await (await fetch('/api/qc')).json(); }
+  catch(e){ $('#qcSummary').textContent='could not load library'; return; }
+  qcLoaded=true;
+  let ok=0,fail=0,none=0;
+  data.files.forEach(f=>{
+    const st = f.failed?'fail':(f.embedded?'ok':'none'); if(st==='ok')ok++; else if(st==='fail')fail++; else none++;
+    const card=document.createElement('div'); card.className='qccard'; card.dataset.st=st;
+    const thumbs=document.createElement('div'); thumbs.className='qcthumbs';
+    thumbs.appendChild(qcThumb(f.path,0.35)); thumbs.appendChild(qcThumb(f.path,0.65));
+    const meta=document.createElement('div'); meta.className='qcmeta';
+    const name=document.createElement('div'); name.className='qcname'; name.textContent=f.name;
+    const badge=document.createElement('span');
+    badge.className='badge '+st;
+    badge.textContent = st==='ok'?'embedded':(st==='fail'?'failed':'not embedded');
+    if(st==='fail') badge.title=f.error||'failed';
+    meta.appendChild(name); meta.appendChild(badge);
+    card.appendChild(thumbs); card.appendChild(meta); grid.appendChild(card);
+  });
+  $('#qcSummary').innerHTML = `<b>${data.count}</b> videos · `
+    + `<span style="color:var(--good)">${ok} embedded</span> · `
+    + `<span style="color:var(--love)">${fail} failed</span> · `
+    + `<span>${none} not embedded</span>`;
+  qcApplyFilter();
+}
+document.querySelectorAll('#qcChips .chip').forEach(ch=>ch.onclick=()=>{
+  document.querySelectorAll('#qcChips .chip').forEach(x=>x.classList.remove('on'));
+  ch.classList.add('on'); qcFilter=ch.dataset.f; qcApplyFilter();
+});
+$('#qcReload').onclick=()=>{ qcLoaded=false; loadQc(); };
+$('#qcLightbox').onclick=()=>$('#qcLightbox').classList.remove('on');
 
 // ================= FLAG =================
 let state={path:null,current_time:0,playing:false,connected:false}, inT=null, outT=null;

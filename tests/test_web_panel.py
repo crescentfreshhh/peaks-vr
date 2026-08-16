@@ -104,6 +104,50 @@ def test_embed_job_honors_scene_timeout(tmp_path, monkeypatch):
     assert run() == 900.0                             # built-in default
 
 
+def test_qc_lists_all_files_with_status(tmp_path):
+    """/api/qc reports every video with embedded/failed/neither, so the QC
+    contact sheet can badge each one. Seeds one cache hit and one failure."""
+    from peaks_vr.cache import EmbeddingCache, path_key
+    from peaks_vr.web.flagging import failure_log_for
+
+    client, media = _panel(tmp_path)
+    cache_root = tmp_path / "cache"
+    EmbeddingCache(cache_root).save(path_key(str(media / "a_180_sbs.mp4")),
+                                    "fake", np.zeros((1, 4), np.float16), [0.0])
+    b = media / "sub" / "b_MKX200_tb.mkv"
+    failure_log_for(str(cache_root)).record(path_key(str(b)), None, str(b),
+                                            error="moov atom not found")
+
+    r = client.get("/api/qc").json()
+    assert r["count"] == 2
+    by = {f["name"]: f for f in r["files"]}
+    assert by["a_180_sbs.mp4"]["embedded"] and not by["a_180_sbs.mp4"]["failed"]
+    assert by["b_MKX200_tb.mkv"]["failed"]
+    assert by["b_MKX200_tb.mkv"]["error"] == "moov atom not found"
+    assert not by["b_MKX200_tb.mkv"]["embedded"]
+
+
+def test_preview_frac_seeks_to_fraction_of_duration(tmp_path, monkeypatch):
+    """`frac` turns a QC thumbnail request into a mid-file seek (frac*duration),
+    so a fixed time can't overrun a short clip."""
+    from PIL import Image
+
+    from peaks_vr.sampling import FrameSampler
+
+    client, media = _panel(tmp_path)
+    monkeypatch.setattr(FrameSampler, "probe_dimensions", lambda self, p: None)
+    monkeypatch.setattr(FrameSampler, "probe_duration", lambda self, p: 200.0)
+    seen = {}
+    def fake_grab(self, path, t):
+        seen["t"] = t
+        return Image.new("RGB", (8, 8))
+    monkeypatch.setattr(FrameSampler, "grab_frame", fake_grab)
+
+    r = client.get("/api/preview", params={"path": "a_180_sbs.mp4", "frac": 0.5})
+    assert r.status_code == 200
+    assert seen["t"] == 100.0  # 0.5 * 200
+
+
 def test_embed_start_requires_media(tmp_path):
     client, _ = _panel(tmp_path, with_media=False)
     # media dir exists but is empty → job runs, finds 0 files
