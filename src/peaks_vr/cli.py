@@ -42,6 +42,24 @@ DEFAULT_CACHE = "cache/embeddings"
 _CANONICAL_MODEL = {"fake": "fake", "dino": "dinov2", "clip": "clip"}
 
 
+VIDEO_EXTS = {".mp4", ".mkv", ".m4v", ".mov", ".wmv", ".avi", ".ts", ".webm"}
+
+
+def iter_video_files(paths) -> list[str]:
+    """Expand the given paths into a sorted list of video files: a directory is
+    walked recursively for known video extensions; a file is kept as-is. Lets
+    `embed /data` take a whole library."""
+    out: list[str] = []
+    for p in paths:
+        pth = Path(p)
+        if pth.is_dir():
+            out += [str(f) for f in pth.rglob("*")
+                    if f.is_file() and f.suffix.lower() in VIDEO_EXTS]
+        else:
+            out.append(str(pth))
+    return sorted(dict.fromkeys(out))  # dedupe, stable order
+
+
 def scene_from_path(path: str) -> Scene:
     """Build a minimal :class:`Scene` from a local file path.
 
@@ -59,19 +77,27 @@ def scene_from_path(path: str) -> Scene:
 def cmd_embed(args) -> int:
     embedder = get_embedder(args.model)
     cache = EmbeddingCache(args.cache)
+    hwaccel = "" if args.hwaccel == "none" else args.hwaccel
     if args.vr:
         from .reprojection import Reprojector
         from .vr_format import detect
 
-    total = len(args.videos)
+    videos = iter_video_files(args.videos)
+    if not videos:
+        print("  ✗ no video files found", file=sys.stderr)
+        return 1
+    print(f"embedding {len(videos)} file(s) (model '{embedder.name}', "
+          f"interval {args.interval:g}s, hwaccel {hwaccel or 'off'}"
+          f"{', VR de-warp' if args.vr else ''})…", file=sys.stderr)
+
+    total = len(videos)
     stats = {"embedded": 0, "skipped": 0, "failed": 0, "frames": 0}
-    for path in args.videos:
+    for path in videos:
         # A fresh sampler per file so the VR de-warp can be file-specific
-        # (each scene has its own projection).
+        # (each scene has its own projection). VR uses sparse mode — one
+        # seek+de-warp per sample, not a full-file decode.
         reproject = None
-        mode = "sparse"
         if args.vr:
-            mode = "interval"
             fmt = detect(Path(path).name)
             if not fmt.is_known:
                 print(f"  ! {Path(path).name}: VR format not recognized "
@@ -79,8 +105,8 @@ def cmd_embed(args) -> int:
                       file=sys.stderr)
             else:
                 reproject = Reprojector.for_format(fmt)
-        sampler = FrameSampler(interval_seconds=args.interval, mode=mode,
-                               reproject=reproject)
+        sampler = FrameSampler(interval_seconds=args.interval, mode="sparse",
+                               hwaccel=hwaccel, reproject=reproject)
         s = embed_library([scene_from_path(path)], sampler, embedder, cache,
                           total=total)
         for k in stats:
@@ -253,6 +279,42 @@ def cmd_probe(args) -> int:
     return 0
 
 
+def cmd_preview(args) -> int:
+    """Render ONE de-warped frame so you can eyeball the projection before
+    embedding a whole library through it."""
+    from .reprojection import Reprojector
+    from .vr_format import detect
+
+    name = Path(args.video).name
+    fmt = detect(name)
+    print(f"detected: projection={fmt.projection.value} layout={fmt.layout.value} "
+          f"fov={fmt.fov_deg} confidence={fmt.confidence:.0%} (from filename)",
+          file=sys.stderr)
+    if not fmt.is_known:
+        print("  ✗ couldn't confidently detect the VR format from the filename. "
+              "Rename with a hint (e.g. _180_sbs, _MKX200_tb) or this de-warp "
+              "will be wrong.", file=sys.stderr)
+        return 1
+
+    reproject = Reprojector.for_format(
+        fmt, viewport_fov_deg=args.fov, yaw=args.yaw, pitch=args.pitch,
+    )
+    hwaccel = "" if args.hwaccel == "none" else args.hwaccel
+    sampler = FrameSampler(hwaccel=hwaccel, reproject=reproject)
+    try:
+        img = sampler.grab_frame(args.video, args.time)
+    except Exception as exc:
+        print(f"  ✗ de-warp failed: {exc}", file=sys.stderr)
+        return 1
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    img.save(out, format="JPEG", quality=90)
+    print(f"wrote {out} — open it: it should look like a normal forward-facing "
+          f"view (not fisheye/stretched, no seam). Tune with --fov/--yaw/--pitch "
+          f"and re-run if it's off.")
+    return 0
+
+
 def cmd_recommend(args) -> int:
     """Turn ❤️ marks into a ranked playlist of similar moments (#3)."""
     from .labels import LabelStore
@@ -340,13 +402,33 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     e = sub.add_parser("embed", help="sample + embed video(s) into the cache")
-    e.add_argument("videos", nargs="+", help="video file paths")
+    e.add_argument("videos", nargs="+",
+                   help="video files or directories (dirs are scanned recursively)")
     e.add_argument("--interval", type=float, default=8.0,
                    help="seconds between samples (default: 8)")
     e.add_argument("--vr", action="store_true",
                    help="VR de-warp: detect format + reproject one eye to a flat "
                         "viewport before embedding (needs ffmpeg on PATH)")
+    e.add_argument("--hwaccel", default="auto", choices=["none", "auto", "cuda"],
+                   help="GPU-assisted decode (NVDEC): auto (default), cuda, or none")
     e.set_defaults(func=cmd_embed)
+
+    pv = sub.add_parser("preview", help="render one de-warped frame to eyeball "
+                        "the VR reprojection before embedding")
+    pv.add_argument("video", help="a VR video file")
+    pv.add_argument("--time", type=float, default=60.0,
+                    help="timestamp to sample, seconds (default: 60)")
+    pv.add_argument("--out", default="preview.jpg",
+                    help="output JPEG path (default: preview.jpg)")
+    pv.add_argument("--fov", type=float, default=100.0,
+                    help="output viewport horizontal FOV, degrees (default: 100)")
+    pv.add_argument("--yaw", type=float, default=0.0,
+                    help="viewport yaw, degrees (default: 0 = forward)")
+    pv.add_argument("--pitch", type=float, default=0.0,
+                    help="viewport pitch, degrees (default: 0; negative looks down)")
+    pv.add_argument("--hwaccel", default="none", choices=["none", "auto", "cuda"],
+                    help="GPU-assisted decode for the grab (default: none)")
+    pv.set_defaults(func=cmd_preview)
 
     s = sub.add_parser("score", help="score cached video(s) against reference stills")
     s.add_argument("videos", nargs="+", help="video file paths (must be embedded)")

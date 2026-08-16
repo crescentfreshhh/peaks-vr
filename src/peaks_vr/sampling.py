@@ -357,12 +357,16 @@ class FrameSampler:
         """
         from PIL import Image as PILImage  # lazy
 
+        # When a reprojector is set, de-warp the grabbed frame too (one eye →
+        # flat viewport) — so previews and the flag UI show what the model sees.
+        vf = [] if self.reproject is None else ["-vf", self.reproject.ffmpeg_filter()]
         cmd = [
             self.ffmpeg,
             "-v", "error",
             *self._input_args(),
             "-ss", f"{time:g}",
             "-i", path,
+            *vf,
             "-frames:v", "1",
             "-f", "image2pipe",
             "-vcodec", "mjpeg",
@@ -395,16 +399,13 @@ class FrameSampler:
         interval streams a full decode over a pipe."""
         if self.mode == "sparse":
             if self.reproject is not None:
-                # Sparse decodes with PyAV in-process, bypassing the ffmpeg
-                # filtergraph that carries the de-warp — so a v360 stage isn't
-                # applied here yet. Fail loud rather than silently caching
-                # warped (meaningless) VR vectors. TODO: apply the de-warp to
-                # the PyAV frame in _sparse_extract_worker, or route VR sampling
-                # through interval mode until then.
-                raise SamplerError(
-                    "VR reprojection is not yet supported in sparse mode; use "
-                    "mode='interval' for VR de-warped sampling"
+                # VR: seek to each sample and de-warp that one frame with ffmpeg
+                # (PyAV sparse can't run the v360 filter). Sparse cost — one
+                # decode per sample, not the whole file — with the de-warp.
+                yield from self._iter_frames_dewarp_seek(
+                    path, resize_short=resize_short, crop=crop
                 )
+                return
             yield from self._iter_frames_sparse(
                 path, resize_short=resize_short, crop=crop
             )
@@ -412,6 +413,58 @@ class FrameSampler:
             yield from self._iter_frames_raw_interval(
                 path, resize_short=resize_short, crop=crop
             )
+
+    def _dewarp_raw_vf(self, resize_short: int, crop: int) -> str:
+        """Filtergraph for a single de-warped sample at the model's input size:
+        one-eye crop + v360 reprojection, then the model's resize/crop."""
+        return (
+            f"{self.reproject.ffmpeg_filter()},"
+            f"scale=w={resize_short}:h={resize_short}"
+            ":force_original_aspect_ratio=increase:flags=bicubic,"
+            f"crop={crop}:{crop}"
+        )
+
+    def _iter_frames_dewarp_seek(self, path: str, *, resize_short: int, crop: int):
+        """VR de-warp sampling with sparse cost: seek to each planned timestamp
+        and decode+de-warp exactly that one frame via ffmpeg (the v360 filter is
+        an ffmpeg stage, so this can't go through the PyAV sparse worker).
+
+        Yields (timestamp, (crop, crop, 3) uint8) — the raw pipeline geometry, so
+        it feeds `embedder.embed_array` like the other raw paths. Cost scales with
+        the number of samples, not the file's length; `-hwaccel` (NVDEC) offloads
+        the per-sample decode."""
+        import numpy as np  # lazy
+
+        duration = self.probe_duration(path)
+        times = plan_timestamps(duration, self.interval)
+        vf = self._dewarp_raw_vf(resize_short, crop)
+        nbytes = crop * crop * 3
+        for t in times:
+            cmd = [
+                self.ffmpeg, "-v", "error",
+                *self._input_args(),
+                "-ss", f"{t:g}", "-i", path,
+                "-vf", vf,
+                "-frames:v", "1",
+                "-f", "rawvideo", "-pix_fmt", "rgb24",
+                "-",
+            ]
+            try:
+                out = subprocess.run(cmd, capture_output=True, check=True)
+            except FileNotFoundError as exc:
+                raise SamplerError(f"{self.ffmpeg} not found on PATH") from exc
+            except subprocess.CalledProcessError as exc:
+                raise SamplerError(
+                    f"ffmpeg de-warp failed for {path}@{t:g}s: "
+                    f"{exc.stderr[:200].decode('utf-8', 'replace')}"
+                ) from exc
+            if len(out.stdout) < nbytes:
+                # a seek past a truncated tail can yield nothing — skip it
+                continue
+            arr = np.frombuffer(out.stdout[:nbytes], dtype=np.uint8).reshape(
+                crop, crop, 3
+            )
+            yield float(t), arr
 
     def _iter_frames_sparse(self, path: str, *, resize_short: int, crop: int):
         """Seek-based sampling, run in a CHILD PROCESS with a hard kill-timeout.

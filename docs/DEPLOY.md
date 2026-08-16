@@ -71,24 +71,50 @@ If the UI connects but shows no playback, the stream's byte order may be flipped
 — set `PEAKS_VR_BYTEORDER=little` and restart. If it still shows nothing, run the
 diagnostic in the console (below) and send the hex it prints.
 
-### Console commands
+## Embed your library
+
+Embedding measures every scene — sample a frame every N seconds → de-warp (one
+eye → flat viewport) → run it through the vision model → cache the vectors. It's
+a one-time GPU cost per file, **resumable** (re-running skips what's done), and
+independent of HereSphere. It's the prerequisite for finding worthy moments later.
+
+**1. Preview the de-warp first** — the VR reprojection depends on the file's
+format being detected from its name, so confirm it looks right on one file before
+committing the whole library:
 
 ```bash
-# embed a VR scene (GPU): sample → de-warp → cache
-docker exec -it peaks-vr peaks-vr --model dino embed "/data/clip_180_sbs.mp4" --vr
+docker exec -it peaks-vr peaks-vr preview "/data/<clip>_180_sbs.mp4" --out /config/preview.jpg
+```
 
-# turn your ❤️ marks into a playlist of similar moments
-docker exec -it peaks-vr peaks-vr --model dino recommend --labels /config/labels.json --out /config/playlist.json
+Open `/config/preview.jpg` off the share. It should look like a **normal
+forward-facing view** — not fisheye, not stretched, no seam down the middle. If
+it's off, the format probably wasn't detected from the filename (make sure names
+carry a hint like `_180_sbs`, `_MKX200_tb`, `_FISHEYE190`), or tune the viewport
+with `--fov` / `--pitch` (VR action often sits a bit low, so e.g. `--pitch -15`).
 
+**2. Embed the whole library** (point it at the mount; directories are scanned
+recursively; GPU decode via NVDEC):
+
+```bash
+docker exec -it peaks-vr peaks-vr --model dino embed /data --vr --hwaccel cuda
+```
+
+It prints per-scene progress and an ETA, and you can stop/restart it any time —
+already-embedded scenes are skipped. Interval defaults to 8s (`--interval` to
+change).
+
+### Other console commands
+
+```bash
 # diagnose the timestamp stream (prints raw bytes if it can't decode)
 docker exec -it peaks-vr peaks-vr probe --listen --ts-port 23573
 
 # check whether the DeoVR remote (control, for the DJ) is reachable
 docker exec -it peaks-vr peaks-vr probe --host <headset-ip>
-
-# play the playlist in the headset (needs the DeoVR remote / control channel)
-docker exec -it peaks-vr peaks-vr dj /config/playlist.json --host <headset-ip>
 ```
+
+(Finding worthy moments — from reference stills or ❤️ marks — and playing them
+with the DJ is a later step, once the library is embedded.)
 
 ---
 
