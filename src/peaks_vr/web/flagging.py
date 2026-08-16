@@ -200,23 +200,33 @@ def _reprojector_for(path: str, *, assume: str | None = None, sampler=None):
     return (Reprojector.for_format(fmt) if fmt.is_known else None), fmt
 
 
+def failure_log_for(cache_root: str):
+    """The failure log beside the cache (persists in the /config volume)."""
+    from ..failures import FailureLog
+    return FailureLog(Path(cache_root).parent / "failures.json")
+
+
 def embed_job(job, mgr, *, media_root: str, cache_root: str, model: str,
               interval: float, vr: bool, hwaccel: str,
-              assume: str | None = None) -> None:
-    """Background task: embed every video under ``media_root`` (resumable)."""
+              assume: str | None = None, paths: list[str] | None = None) -> None:
+    """Background task: embed videos (resumable). Scans ``media_root`` unless an
+    explicit ``paths`` list is given (used for retrying just the failures).
+    Each casualty is recorded in the failure log; a later success clears it."""
     from ..cache import EmbeddingCache
     from ..cli import iter_video_files, scene_from_path
     from ..embedding import get_embedder
     from ..pipeline import embed_library
     from ..sampling import FrameSampler
 
-    videos = iter_video_files([media_root])
+    videos = paths if paths is not None else iter_video_files([media_root])
     job.total = len(videos)
-    job.log(f"found {len(videos)} file(s) under {media_root}")
+    where = "retry set" if paths is not None else media_root
+    job.log(f"found {len(videos)} file(s) ({where})")
     if not videos:
         return
     embedder = get_embedder(model)
     cache = EmbeddingCache(cache_root)
+    failures = failure_log_for(cache_root)
     hw = "" if hwaccel == "none" else hwaccel
     for path in videos:
         if mgr.should_stop():
@@ -233,10 +243,11 @@ def embed_job(job, mgr, *, media_root: str, cache_root: str, model: str,
         sampler = FrameSampler(interval_seconds=interval, mode="sparse",
                                hwaccel=hw, reproject=reproject)
         s = embed_library([scene_from_path(path)], sampler, embedder, cache,
-                          log=job.log)
+                          log=job.log, failure_log=failures)
         for k in ("embedded", "skipped", "failed", "frames"):
             job.stats[k] = job.stats.get(k, 0) + s.get(k, 0)
         job.done += 1
+    job.stats["failed_total"] = len(failures)
 
 
 def create_app(mirror: PlaybackMirror, store: LabelStore, *,
@@ -410,6 +421,34 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
     def embed_status():
         snap = jobs.status()
         return {"job": snap, "embedded": _cache_count(), "running": jobs.running}
+
+    @app.get("/api/failures")
+    def failures():
+        log = failure_log_for(cache_root)
+        return {"count": len(log),
+                "entries": [{"name": Path(e.get("path") or e["key"]).name,
+                             "path": e.get("path"), "error": e.get("error", ""),
+                             "hwaccel": e.get("hwaccel", ""), "ts": e.get("ts")}
+                            for e in log.entries()]}
+
+    @app.post("/api/embed/retry")
+    def embed_retry():
+        log = failure_log_for(cache_root)
+        paths = [e["path"] for e in log.entries() if e.get("path")]
+        if not paths:
+            return {"started": False, "reason": "no failed files to retry"}
+        try:
+            jobs.start("retry", lambda job, mgr: embed_job(
+                job, mgr, media_root=media_root or "", cache_root=cache_root,
+                model=model, interval=8.0, vr=True, hwaccel="auto",
+                assume=assume_default, paths=paths))
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc))
+        return {"started": True, "count": len(paths)}
+
+    @app.post("/api/failures/clear")
+    def failures_clear():
+        return {"cleared": failure_log_for(cache_root).clear()}
 
     return app
 

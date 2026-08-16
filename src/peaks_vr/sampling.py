@@ -377,26 +377,33 @@ class FrameSampler:
         # When a reprojector is set, de-warp the grabbed frame too (one eye →
         # flat viewport) — so previews and the flag UI show what the model sees.
         vf = [] if self.reproject is None else ["-vf", self.reproject.ffmpeg_filter()]
-        cmd = [
-            self.ffmpeg,
-            "-v", "error",
-            *self._input_args(),
-            "-ss", f"{time:g}",
-            "-i", path,
-            *vf,
-            "-frames:v", "1",
-            "-f", "image2pipe",
-            "-vcodec", "mjpeg",
-            "-",
-        ]
+
+        def _cmd(hwaccel: str) -> list[str]:
+            args = ["-hwaccel", hwaccel] if hwaccel else []
+            return [
+                self.ffmpeg, "-v", "error", *args,
+                "-ss", f"{time:g}", "-i", path, *vf,
+                "-frames:v", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-",
+            ]
+
         try:
-            out = subprocess.run(cmd, capture_output=True, check=True)
+            out = subprocess.run(_cmd(self.hwaccel), capture_output=True, check=True)
         except FileNotFoundError as exc:
             raise SamplerError(f"{self.ffmpeg} not found on PATH") from exc
         except subprocess.CalledProcessError as exc:
-            raise SamplerError(
-                f"ffmpeg frame grab failed for {path}@{time}s: {exc.stderr[:200]}"
-            ) from exc
+            if self.hwaccel:  # NVDEC unavailable → retry on CPU
+                try:
+                    out = subprocess.run(_cmd(""), capture_output=True, check=True)
+                except subprocess.CalledProcessError as exc2:
+                    raise SamplerError(
+                        f"ffmpeg frame grab failed for {path}@{time}s: "
+                        f"{exc2.stderr[:200].decode('utf-8', 'replace')}"
+                    ) from exc2
+            else:
+                raise SamplerError(
+                    f"ffmpeg frame grab failed for {path}@{time}s: "
+                    f"{exc.stderr[:200].decode('utf-8', 'replace')}"
+                ) from exc
         if not out.stdout:
             raise SamplerError(f"no frame decoded for {path}@{time}s")
         return PILImage.open(BytesIO(out.stdout)).convert("RGB")
@@ -456,25 +463,40 @@ class FrameSampler:
         times = plan_timestamps(duration, self.interval)
         vf = self._dewarp_raw_vf(resize_short, crop)
         nbytes = crop * crop * 3
-        for t in times:
-            cmd = [
-                self.ffmpeg, "-v", "error",
-                *self._input_args(),
-                "-ss", f"{t:g}", "-i", path,
-                "-vf", vf,
-                "-frames:v", "1",
-                "-f", "rawvideo", "-pix_fmt", "rgb24",
-                "-",
+        # `hw` may drop to "" the first time NVDEC fails to init (e.g. no
+        # libcuda in the container) — a pure optimization, so we fall back to CPU
+        # decode for this scene rather than failing every file.
+        hw = self.hwaccel
+
+        def _cmd(t: float, hwaccel: str) -> list[str]:
+            args = ["-hwaccel", hwaccel] if hwaccel else []
+            return [
+                self.ffmpeg, "-v", "error", *args,
+                "-ss", f"{t:g}", "-i", path, "-vf", vf,
+                "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
             ]
+
+        for t in times:
             try:
-                out = subprocess.run(cmd, capture_output=True, check=True)
+                out = subprocess.run(_cmd(t, hw), capture_output=True, check=True)
             except FileNotFoundError as exc:
                 raise SamplerError(f"{self.ffmpeg} not found on PATH") from exc
             except subprocess.CalledProcessError as exc:
-                raise SamplerError(
-                    f"ffmpeg de-warp failed for {path}@{t:g}s: "
-                    f"{exc.stderr[:200].decode('utf-8', 'replace')}"
-                ) from exc
+                if hw:  # hardware decode unavailable → retry on CPU, then stick
+                    hw = ""
+                    try:
+                        out = subprocess.run(_cmd(t, hw), capture_output=True,
+                                             check=True)
+                    except subprocess.CalledProcessError as exc2:
+                        raise SamplerError(
+                            f"ffmpeg de-warp failed for {path}@{t:g}s: "
+                            f"{exc2.stderr[:200].decode('utf-8', 'replace')}"
+                        ) from exc2
+                else:
+                    raise SamplerError(
+                        f"ffmpeg de-warp failed for {path}@{t:g}s: "
+                        f"{exc.stderr[:200].decode('utf-8', 'replace')}"
+                    ) from exc
             if len(out.stdout) < nbytes:
                 # a seek past a truncated tail can yield nothing — skip it
                 continue

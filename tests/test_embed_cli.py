@@ -89,6 +89,35 @@ def test_grab_frame_injects_dewarp_when_reprojector_set(monkeypatch):
     assert "input=fisheye" in vf and "crop=iw:ih/2:0:0" in vf  # TB top eye
 
 
+def test_dewarp_seek_falls_back_to_cpu_when_hwaccel_fails(tmp_path, monkeypatch):
+    """If -hwaccel init fails (e.g. no libcuda), the frame is retried on CPU and
+    embedding still completes instead of failing the file."""
+    import subprocess as sp
+
+    rep = Reprojector.for_format(detect("scene_180_sbs.mp4"))
+    sampler = FrameSampler(interval_seconds=8.0, mode="sparse",
+                           hwaccel="cuda", reproject=rep)
+    monkeypatch.setattr(sampler, "probe_duration", lambda p: 12.0)
+
+    cmds = []
+
+    def fake_run(cmd, capture_output=False, check=False, **kw):
+        cmds.append(cmd)
+        if "-hwaccel" in cmd:  # simulate "Cannot load libcuda.so.1"
+            raise sp.CalledProcessError(1, cmd, output=b"",
+                                        stderr=b"Cannot load libcuda.so.1")
+        buf = np.zeros(224 * 224 * 3, dtype=np.uint8).tobytes()
+        return types.SimpleNamespace(stdout=buf, stderr=b"", returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    frames = list(sampler.iter_frames_raw("x.mp4", resize_short=256, crop=224))
+
+    assert len(frames) == 2                      # both samples decoded on CPU
+    # first cmd tried cuda; after the fallback, later cmds carry no -hwaccel
+    assert "-hwaccel" in cmds[0]
+    assert "-hwaccel" not in cmds[-1]
+
+
 def test_grab_frame_no_dewarp_without_reprojector(monkeypatch):
     from PIL import Image
 

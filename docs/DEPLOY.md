@@ -77,6 +77,14 @@ one-time cost per file, **resumable**, and independent of HereSphere.
    so try Pitch `-15`).
 3. Click **Start embedding**. A progress bar, current file, ETA, and a live log
    appear. You can **Stop** and resume anytime — done scenes are skipped.
+4. **Failed embeds** appear in their own card with the ffmpeg error. **Retry
+   failed** re-attempts only those (faster than a full rescan); a fixed file
+   drops off the list automatically. Some errors mean the file itself is broken
+   — e.g. `moov atom not found` = a truncated/incomplete mp4; fix or re-download
+   it before retrying. (NVDEC is optional: if the GPU/driver isn't available in
+   the container, decode falls back to CPU automatically — slower, but it won't
+   fail the file. To actually get GPU decode, ensure the unraid **Nvidia Driver**
+   plugin is installed and the container has `--runtime=nvidia`.)
 
 ### ② Flag moments (needs HereSphere playback)
 

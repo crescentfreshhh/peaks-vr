@@ -137,6 +137,17 @@
       </div>
       <div class="note">Resumable — already-embedded scenes are skipped, so you can stop and restart anytime.</div>
     </div>
+
+    <div class="card hide" id="failCard">
+      <h2>Failed embeds (<span id="failCount">0</span>)</h2>
+      <div class="mut">Files ffmpeg couldn't process. Some (e.g. "moov atom not
+        found") are broken/incomplete — fix or re-download, then retry.</div>
+      <ul class="marks" id="failList" style="margin-top:8px"></ul>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="failRetry" style="flex:2">Retry failed</button>
+        <button id="failClear" style="flex:1">Clear list</button>
+      </div>
+    </div>
   </section>
 
   <!-- ================= FLAG TAB ================= -->
@@ -240,8 +251,24 @@ async function pollEmbed(){
   const running = s.running;
   $('#emStart').disabled = running; $('#emStop').disabled = !running;
   if(running){ embTimer=setTimeout(pollEmbed, 1000); }
-  else { clearTimeout(embTimer); }
+  else { clearTimeout(embTimer); loadFailures(); }
 }
+async function loadFailures(){
+  const f = await (await fetch('/api/failures')).json();
+  $('#failCount').textContent = f.count;
+  $('#failCard').classList.toggle('hide', f.count===0);
+  const ul = $('#failList'); ul.innerHTML='';
+  f.entries.slice(0,100).forEach(e=>{ const li=document.createElement('li');
+    li.innerHTML=`<span>${e.name}</span><span style="max-width:60%;text-align:right;color:var(--love)">${(e.error||'').slice(0,60)}</span>`;
+    ul.appendChild(li); });
+}
+$('#failRetry').onclick = async () => {
+  const r = await fetch('/api/embed/retry',{method:'POST'});
+  const j = await r.json();
+  if(j.started){ $('#emProgWrap').classList.remove('hide'); pollEmbed(); }
+  else alert(j.reason||'nothing to retry');
+};
+$('#failClear').onclick = async () => { await fetch('/api/failures/clear',{method:'POST'}); loadFailures(); };
 
 // ================= FLAG =================
 let state={path:null,current_time:0,playing:false,connected:false}, inT=null, outT=null;
@@ -280,7 +307,7 @@ async function loadMarks(){
 }
 
 // ---------- boot ----------
-loadConfig(); loadLibrary(); refreshStats(); pollEmbed();
+loadConfig(); loadLibrary(); refreshStats(); pollEmbed(); loadFailures();
 pollFlag(); setInterval(pollFlag, 700); loadMarks();
 </script>
 </body>

@@ -75,20 +75,30 @@ def scene_from_path(path: str) -> Scene:
 
 
 def cmd_embed(args) -> int:
+    from .failures import FailureLog
+
     embedder = get_embedder(args.model)
     cache = EmbeddingCache(args.cache)
+    failures = FailureLog(Path(args.cache).parent / "failures.json")
     hwaccel = "" if args.hwaccel == "none" else args.hwaccel
     if args.vr:
         from .reprojection import Reprojector
         from .vr_format import detect
 
-    videos = iter_video_files(args.videos)
+    if args.retry_failed:
+        videos = [e["path"] for e in failures.entries() if e.get("path")]
+        if not videos:
+            print("  · no failed files to retry", file=sys.stderr)
+            return 0
+    else:
+        videos = iter_video_files(args.videos)
     if not videos:
         print("  ✗ no video files found", file=sys.stderr)
         return 1
     print(f"embedding {len(videos)} file(s) (model '{embedder.name}', "
           f"interval {args.interval:g}s, hwaccel {hwaccel or 'off'}"
-          f"{', VR de-warp' if args.vr else ''})…", file=sys.stderr)
+          f"{', VR de-warp' if args.vr else ''}"
+          f"{', retry' if args.retry_failed else ''})…", file=sys.stderr)
 
     total = len(videos)
     stats = {"embedded": 0, "skipped": 0, "failed": 0, "frames": 0}
@@ -109,12 +119,15 @@ def cmd_embed(args) -> int:
         sampler = FrameSampler(interval_seconds=args.interval, mode="sparse",
                                hwaccel=hwaccel, reproject=reproject)
         s = embed_library([scene_from_path(path)], sampler, embedder, cache,
-                          total=total)
+                          total=total, failure_log=failures)
         for k in stats:
             stats[k] += s.get(k, 0)
     print(f"\nembed: {stats['embedded']} embedded, {stats['skipped']} skipped, "
           f"{stats['failed']} failed, {stats['frames']} frames "
           f"→ cache '{args.cache}' (model '{embedder.name}')")
+    if len(failures):
+        print(f"  {len(failures)} file(s) in the failure log "
+              f"(retry with --retry-failed)", file=sys.stderr)
     return 0 if stats["failed"] == 0 else 1
 
 
@@ -417,6 +430,8 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--assume", default="180_sbs",
                    help="format to assume for files with no filename hint "
                         "(e.g. 180_sbs, 180_tb, mkx200_sbs; '' to skip them)")
+    e.add_argument("--retry-failed", action="store_true",
+                   help="re-embed only the files in the failure log")
     e.set_defaults(func=cmd_embed)
 
     pv = sub.add_parser("preview", help="render one de-warped frame to eyeball "

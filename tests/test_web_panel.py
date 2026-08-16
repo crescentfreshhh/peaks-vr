@@ -78,6 +78,44 @@ def test_embed_start_requires_media(tmp_path):
     assert r.status_code == 200
 
 
+def test_failures_recorded_listed_retried_cleared(tmp_path):
+    client, _ = _panel(tmp_path)
+    # embed the two fake videos → both fail (no ffmpeg), recorded in the log
+    client.post("/api/embed/start", json={"vr": False, "hwaccel": "none"})
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if not client.get("/api/embed/status").json()["running"]:
+            break
+        time.sleep(0.05)
+
+    f = client.get("/api/failures").json()
+    assert f["count"] == 2
+    assert all(e["error"] for e in f["entries"])   # each carries the ffmpeg error
+
+    # retry runs a job over just the failed set (still 2, still no ffmpeg)
+    r = client.post("/api/embed/retry")
+    assert r.json() == {"started": True, "count": 2}
+    deadline = time.time() + 5
+    job = None
+    while time.time() < deadline:
+        st = client.get("/api/embed/status").json()
+        job = st["job"]
+        if not st["running"]:
+            break
+        time.sleep(0.05)
+    assert job["name"] == "retry" and job["total"] == 2   # not a full rescan
+
+    # clear empties the list
+    assert client.post("/api/failures/clear").json()["cleared"] == 2
+    assert client.get("/api/failures").json()["count"] == 0
+
+
+def test_retry_with_no_failures_is_noop(tmp_path):
+    client, _ = _panel(tmp_path)
+    r = client.post("/api/embed/retry")
+    assert r.json()["started"] is False
+
+
 def test_preview_rejects_path_traversal(tmp_path):
     client, _ = _panel(tmp_path)
     r = client.get("/api/preview", params={"path": "../../etc/passwd"})
