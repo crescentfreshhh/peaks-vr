@@ -96,6 +96,15 @@
         forward-facing view — not fisheye, stretched, or split down the middle.</div>
       <label class="f">File</label>
       <select id="pvFile"></select>
+      <label class="f">If the filename has no format hint, assume</label>
+      <select id="assume">
+        <option value="180_sbs">180° SBS (equirect)</option>
+        <option value="180_tb">180° TB (equirect)</option>
+        <option value="mkx200_sbs">Fisheye 200° SBS (MKX200)</option>
+        <option value="mkx200_tb">Fisheye 200° TB</option>
+        <option value="fisheye190_sbs">Fisheye 190° SBS</option>
+        <option value="">Skip unrecognized files</option>
+      </select>
       <div class="row row3" style="margin-top:8px">
         <div><label class="f">Time (s)</label><input id="pvTime" type="number" value="60" min="0"></div>
         <div><label class="f">FOV</label><input id="pvFov" type="number" value="100" min="60" max="140"></div>
@@ -179,6 +188,7 @@ async function loadConfig(){
   } else {
     $('#mediaNote').innerHTML = `Library: <b>${cfg.media_root}</b> · model <b>${cfg.model}</b>`;
   }
+  if(cfg.assume_default!=null) $('#assume').value = cfg.assume_default;
 }
 async function loadLibrary(){
   const lib = await (await fetch('/api/library')).json();
@@ -192,10 +202,10 @@ async function refreshStats(){
   $('#embCount').textContent = s.embedded;
 }
 $('#pvGo').onclick = async () => {
-  const path=$('#pvFile').value, time=$('#pvTime').value, fov=$('#pvFov').value, pitch=$('#pvPitch').value;
+  const path=$('#pvFile').value, time=$('#pvTime').value, fov=$('#pvFov').value, pitch=$('#pvPitch').value, assume=$('#assume').value;
   $('#pvMsg').textContent='rendering…'; $('#pvGo').disabled=true;
   try{
-    const url=`/api/preview?path=${encodeURIComponent(path)}&time=${time}&fov=${fov}&pitch=${pitch}`;
+    const url=`/api/preview?path=${encodeURIComponent(path)}&time=${time}&fov=${fov}&pitch=${pitch}&assume=${encodeURIComponent(assume)}`;
     const r=await fetch(url);
     if(r.ok){
       const blob=await r.blob();
@@ -209,7 +219,7 @@ $('#pvGo').onclick = async () => {
   $('#pvGo').disabled=false;
 };
 $('#emStart').onclick = async () => {
-  const body={interval:parseFloat($('#emInterval').value), vr:$('#emVr').value==='1', hwaccel:$('#emHw').value};
+  const body={interval:parseFloat($('#emInterval').value), vr:$('#emVr').value==='1', hwaccel:$('#emHw').value, assume:$('#assume').value};
   const r=await fetch('/api/embed/start',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
   if(r.ok){ $('#emProgWrap').classList.remove('hide'); pollEmbed(); }
   else { const e=await r.json().catch(()=>({detail:r.statusText})); alert(e.detail||'could not start'); }

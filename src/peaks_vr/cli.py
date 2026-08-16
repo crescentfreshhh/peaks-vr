@@ -98,11 +98,12 @@ def cmd_embed(args) -> int:
         # seek+de-warp per sample, not a full-file decode.
         reproject = None
         if args.vr:
-            fmt = detect(Path(path).name)
+            dims = FrameSampler(hwaccel=hwaccel).probe_dimensions(path)
+            aspect = (dims[0] / dims[1]) if dims else None
+            fmt = detect(Path(path).name, aspect_ratio=aspect, assume=args.assume)
             if not fmt.is_known:
                 print(f"  ! {Path(path).name}: VR format not recognized "
-                      f"(confidence {fmt.confidence:.0%}); skipping de-warp",
-                      file=sys.stderr)
+                      f"(no hint/assume); skipping de-warp", file=sys.stderr)
             else:
                 reproject = Reprojector.for_format(fmt)
         sampler = FrameSampler(interval_seconds=args.interval, mode="sparse",
@@ -285,21 +286,23 @@ def cmd_preview(args) -> int:
     from .reprojection import Reprojector
     from .vr_format import detect
 
+    hwaccel = "" if args.hwaccel == "none" else args.hwaccel
     name = Path(args.video).name
-    fmt = detect(name)
+    dims = FrameSampler(hwaccel=hwaccel).probe_dimensions(args.video)
+    aspect = (dims[0] / dims[1]) if dims else None
+    fmt = detect(name, aspect_ratio=aspect, assume=args.assume)
     print(f"detected: projection={fmt.projection.value} layout={fmt.layout.value} "
-          f"fov={fmt.fov_deg} confidence={fmt.confidence:.0%} (from filename)",
+          f"fov={fmt.fov_deg} confidence={fmt.confidence:.0%} (source: {fmt.source})",
           file=sys.stderr)
     if not fmt.is_known:
-        print("  ✗ couldn't confidently detect the VR format from the filename. "
-              "Rename with a hint (e.g. _180_sbs, _MKX200_tb) or this de-warp "
-              "will be wrong.", file=sys.stderr)
+        print("  ✗ couldn't determine the VR format. Add a filename hint "
+              "(e.g. _180_sbs, _MKX200_tb) or pass --assume 180_sbs.",
+              file=sys.stderr)
         return 1
 
     reproject = Reprojector.for_format(
         fmt, viewport_fov_deg=args.fov, yaw=args.yaw, pitch=args.pitch,
     )
-    hwaccel = "" if args.hwaccel == "none" else args.hwaccel
     sampler = FrameSampler(hwaccel=hwaccel, reproject=reproject)
     try:
         img = sampler.grab_frame(args.video, args.time)
@@ -378,7 +381,8 @@ def cmd_flag(args) -> int:
     if args.demo:
         run_demo(web_host=args.web_host, web_port=args.web_port,
                  labels_path=args.labels, profile=args.profile,
-                 media_root=args.media, cache_root=args.cache, model=args.model)
+                 media_root=args.media, cache_root=args.cache, model=args.model,
+                 assume_default=args.assume)
         return 0
     if not args.listen and not args.host:
         print("  ✗ need --listen (HereSphere timestamp server) or --host "
@@ -387,7 +391,8 @@ def cmd_flag(args) -> int:
     run(args.host, args.port, listen=args.listen, ts_port=args.ts_port,
         web_host=args.web_host, web_port=args.web_port, labels_path=args.labels,
         profile=args.profile, byteorder=args.byteorder,
-        media_root=args.media, cache_root=args.cache, model=args.model)
+        media_root=args.media, cache_root=args.cache, model=args.model,
+        assume_default=args.assume)
     return 0
 
 
@@ -409,6 +414,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "viewport before embedding (needs ffmpeg on PATH)")
     e.add_argument("--hwaccel", default="auto", choices=["none", "auto", "cuda"],
                    help="GPU-assisted decode (NVDEC): auto (default), cuda, or none")
+    e.add_argument("--assume", default="180_sbs",
+                   help="format to assume for files with no filename hint "
+                        "(e.g. 180_sbs, 180_tb, mkx200_sbs; '' to skip them)")
     e.set_defaults(func=cmd_embed)
 
     pv = sub.add_parser("preview", help="render one de-warped frame to eyeball "
@@ -426,6 +434,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="viewport pitch, degrees (default: 0; negative looks down)")
     pv.add_argument("--hwaccel", default="none", choices=["none", "auto", "cuda"],
                     help="GPU-assisted decode for the grab (default: none)")
+    pv.add_argument("--assume", default="180_sbs",
+                    help="format to assume if the filename has no hint "
+                         "(default: 180_sbs; '' to require a hint)")
     pv.set_defaults(func=cmd_preview)
 
     s = sub.add_parser("score", help="score cached video(s) against reference stills")
@@ -485,6 +496,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="remote length-prefix endianness (default: big)")
     fl.add_argument("--media", default=None,
                     help="library directory to enable the Embed tab (e.g. /data)")
+    fl.add_argument("--assume", default="180_sbs",
+                    help="default format for files with no filename hint "
+                         "(default: 180_sbs)")
     fl.add_argument("--demo", action="store_true",
                     help="run with a synthetic feed — no headset required")
     fl.set_defaults(func=cmd_flag)

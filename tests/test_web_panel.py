@@ -84,8 +84,14 @@ def test_preview_rejects_path_traversal(tmp_path):
     assert r.status_code == 400
 
 
-def test_preview_unknown_format_is_422(tmp_path):
+def test_preview_unknown_format_needs_assume(tmp_path):
     client, media = _panel(tmp_path)
     (media / "mystery.mp4").write_bytes(b"x")
-    r = client.get("/api/preview", params={"path": "mystery.mp4"})
-    assert r.status_code == 422  # no VR hint in the filename
+    # no hint AND assume explicitly empty → 422
+    r = client.get("/api/preview", params={"path": "mystery.mp4", "assume": ""})
+    assert r.status_code == 422
+    # with an assume, detection succeeds and it reaches the sampler (503 here —
+    # no ffmpeg in the sandbox — i.e. it got *past* format detection)
+    r = client.get("/api/preview", params={"path": "mystery.mp4",
+                                           "assume": "180_sbs"})
+    assert r.status_code == 503

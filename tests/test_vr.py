@@ -33,6 +33,38 @@ def test_detect_unknown_is_not_known():
     assert fmt.layout is StereoLayout.UNKNOWN
 
 
+# --- fallback detection for unhinted files ----------------------------------
+
+def test_aspect_ratio_picks_sbs_when_no_hint():
+    fmt = detect("noHint.mp4", aspect_ratio=2.0, assume="180_sbs")
+    assert fmt.layout is StereoLayout.SBS      # from aspect (2:1 → SBS)
+    assert fmt.projection is Projection.EQUIRECT and fmt.fov_deg == 180.0  # assumed
+    assert fmt.is_known and fmt.source == "aspect+assumed"
+
+
+def test_aspect_ratio_picks_tb_when_no_hint():
+    fmt = detect("noHint.mp4", aspect_ratio=0.5, assume="180_sbs")
+    assert fmt.layout is StereoLayout.TB       # aspect (1:2 → TB) overrides assume's SBS
+
+
+def test_assume_fills_everything_without_aspect():
+    fmt = detect("noHint.mp4", assume="mkx200_tb")
+    assert fmt.projection is Projection.FISHEYE
+    assert fmt.layout is StereoLayout.TB and fmt.fov_deg == 200.0
+    assert fmt.is_known and "assumed" in fmt.source
+
+
+def test_filename_hint_beats_assume():
+    fmt = detect("clip_180_sbs.mp4", aspect_ratio=0.5, assume="mkx200_tb")
+    assert fmt.projection is Projection.EQUIRECT and fmt.layout is StereoLayout.SBS
+    assert fmt.source == "filename"            # hint wins, fallbacks ignored
+
+
+def test_no_hint_no_assume_stays_unknown():
+    fmt = detect("noHint.mp4", assume="")
+    assert not fmt.is_known
+
+
 # --- reprojection filter builder -------------------------------------------
 
 def test_reprojector_sbs_equirect_filter():

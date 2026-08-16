@@ -156,16 +156,54 @@ def detect_from_tags(tags: list[str]) -> VRFormat:
     raise NotImplementedError("tag-based VR format detection not yet implemented")
 
 
-def detect(name: str, *, tags: list[str] | None = None,
-           aspect_ratio: float | None = None) -> VRFormat:
-    """Combine all available signals into a single best guess.
+def _layout_from_aspect(aspect_ratio: float) -> StereoLayout:
+    """Full-frame aspect → stereo layout: SBS packs two eyes side by side (wide,
+    ~2:1), TB stacks them (tall, ~1:2). The band in between is left UNKNOWN so a
+    weaker signal doesn't override an explicit assumption."""
+    if aspect_ratio >= 1.5:
+        return StereoLayout.SBS
+    if aspect_ratio <= 1.1:
+        return StereoLayout.TB
+    return StereoLayout.UNKNOWN
 
-    For now this delegates to :func:`detect_from_filename`; as tag- and
-    aspect-based detectors land they should be fused here (highest-confidence
-    signal wins, ties broken by filename). Aspect ratio is the last-resort
-    fallback for un-annotated files.
+
+def detect(name: str, *, tags: list[str] | None = None,
+           aspect_ratio: float | None = None,
+           assume: str | None = None) -> VRFormat:
+    """Best guess at a scene's VR format, fusing available signals.
+
+    Precedence: the **filename** wins whenever it fully identifies the format
+    (so working, hinted files are unchanged). When it doesn't, the **aspect
+    ratio** fills in the stereo layout (SBS vs TB — the axis most likely to vary
+    within a library), and finally the **assume** spec fills any remaining gaps
+    (projection / FOV / layout) so an un-annotated file is still de-warped rather
+    than skipped. ``assume`` is a format token string parsed with the same logic
+    as filenames — e.g. ``"180_sbs"``, ``"mkx200_tb"``, ``"fisheye190_sbs"``.
     """
     fmt = detect_from_filename(name)
-    # TODO: fold in detect_from_tags(tags) and an aspect-ratio heuristic, then
-    # pick the highest-confidence result.
-    return fmt
+    if fmt.is_known:
+        return fmt
+
+    projection, layout, fov = fmt.projection, fmt.layout, fmt.fov_deg
+    source_bits = ["filename"] if fmt.confidence else []
+
+    if layout is StereoLayout.UNKNOWN and aspect_ratio:
+        layout = _layout_from_aspect(aspect_ratio)
+        if layout is not StereoLayout.UNKNOWN:
+            source_bits.append("aspect")
+
+    if assume:
+        a = detect_from_filename(assume)
+        if projection is Projection.UNKNOWN:
+            projection = a.projection
+        if fov is None:
+            fov = a.fov_deg
+        if layout is StereoLayout.UNKNOWN:
+            layout = a.layout
+        source_bits.append("assumed")
+
+    return VRFormat(
+        projection=projection, layout=layout, fov_deg=fov,
+        confidence=0.3 if "assumed" in source_bits else fmt.confidence,
+        source="+".join(source_bits) or "none",
+    )

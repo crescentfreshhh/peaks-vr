@@ -303,6 +303,23 @@ class FrameSampler:
         except (KeyError, ValueError, json.JSONDecodeError) as exc:
             raise SamplerError(f"could not parse duration for {path}") from exc
 
+    def probe_dimensions(self, path: str) -> tuple[int, int] | None:
+        """Return (width, height) of the first video stream via ffprobe, or None
+        on any failure — a best-effort signal for aspect-ratio format detection."""
+        cmd = [
+            self.ffprobe, "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "json", path,
+        ]
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            s = json.loads(out.stdout)["streams"][0]
+            w, h = int(s["width"]), int(s["height"])
+            return (w, h) if w > 0 and h > 0 else None
+        except Exception:
+            return None
+
     # --- command assembly -------------------------------------------------------
 
     def _scale_filter(self) -> str:
