@@ -57,64 +57,43 @@ the GPU.)
 
 ---
 
-## First run — connect HereSphere
+## Everything runs from the WebGUI
 
-1. Find **this server's LAN IP** (the machine running the container): unraid
-   shows it; otherwise `ip addr` / `ipconfig`. Say it's `192.168.1.50`.
-2. In HereSphere → settings → **timestamp server**, enter
-   `192.168.1.50` and port **`23573`**, and enable it.
-3. Open the UI at **http://192.168.1.50:8801**, put the headset on, play a video.
-   The page should mirror playback; tap **❤ MARK** on the moments you like.
-   Marks persist to `/config/labels.json`.
+Open **http://\<server-ip\>:8801**. Two tabs — no console needed.
 
-If the UI connects but shows no playback, the stream's byte order may be flipped
-— set `PEAKS_VR_BYTEORDER=little` and restart. If it still shows nothing, run the
-diagnostic in the console (below) and send the hex it prints.
+### ① Embed library (do this first, no headset required)
 
-## Embed your library
+This is the GPU pass that measures every scene (sample a frame every N seconds →
+de-warp one eye to a flat viewport → vision-model fingerprint → cache). It's a
+one-time cost per file, **resumable**, and independent of HereSphere.
 
-Embedding measures every scene — sample a frame every N seconds → de-warp (one
-eye → flat viewport) → run it through the vision model → cache the vectors. It's
-a one-time GPU cost per file, **resumable** (re-running skips what's done), and
-independent of HereSphere. It's the prerequisite for finding worthy moments later.
+1. The **Library** card shows how many videos were found under `/data` and how
+   many are already embedded.
+2. **Preview the de-warp first.** In the Preview card, pick a file and click
+   **Preview frame**. The image should look like a **normal forward-facing view**
+   — not fisheye, not stretched, no seam down the middle. If it's off, the VR
+   format wasn't recognized from the filename (names need a hint like `_180_sbs`,
+   `_MKX200_tb`, `_FISHEYE190`), or nudge **FOV/Pitch** (VR action often sits low,
+   so try Pitch `-15`).
+3. Click **Start embedding**. A progress bar, current file, ETA, and a live log
+   appear. You can **Stop** and resume anytime — done scenes are skipped.
 
-**1. Preview the de-warp first** — the VR reprojection depends on the file's
-format being detected from its name, so confirm it looks right on one file before
-committing the whole library:
+### ② Flag moments (needs HereSphere playback)
 
-```bash
-docker exec -it peaks-vr peaks-vr preview "/data/<clip>_180_sbs.mp4" --out /config/preview.jpg
-```
+1. Find **this server's LAN IP** (unraid shows it; else `ip addr`/`ipconfig`),
+   e.g. `192.168.1.50`.
+2. In HereSphere → settings → **timestamp server**, enter `192.168.1.50` and port
+   **`23573`**, enable it.
+3. On the **Flag** tab, put the headset on and play a video — the page mirrors
+   playback; tap **❤ MARK** on moments you like (marks → `/config/labels.json`).
 
-Open `/config/preview.jpg` off the share. It should look like a **normal
-forward-facing view** — not fisheye, not stretched, no seam down the middle. If
-it's off, the format probably wasn't detected from the filename (make sure names
-carry a hint like `_180_sbs`, `_MKX200_tb`, `_FISHEYE190`), or tune the viewport
-with `--fov` / `--pitch` (VR action often sits a bit low, so e.g. `--pitch -15`).
+If the Flag tab connects but shows no playback, set `PEAKS_VR_BYTEORDER=little`
+and restart. Still nothing? Diagnose from the console:
+`docker exec -it peaks-vr peaks-vr probe --listen --ts-port 23573` (prints the raw
+bytes if it can't decode — send those).
 
-**2. Embed the whole library** (point it at the mount; directories are scanned
-recursively; GPU decode via NVDEC):
-
-```bash
-docker exec -it peaks-vr peaks-vr --model dino embed /data --vr --hwaccel cuda
-```
-
-It prints per-scene progress and an ETA, and you can stop/restart it any time —
-already-embedded scenes are skipped. Interval defaults to 8s (`--interval` to
-change).
-
-### Other console commands
-
-```bash
-# diagnose the timestamp stream (prints raw bytes if it can't decode)
-docker exec -it peaks-vr peaks-vr probe --listen --ts-port 23573
-
-# check whether the DeoVR remote (control, for the DJ) is reachable
-docker exec -it peaks-vr peaks-vr probe --host <headset-ip>
-```
-
-(Finding worthy moments — from reference stills or ❤️ marks — and playing them
-with the DJ is a later step, once the library is embedded.)
+(Turning the library + your taste into a ranked DJ playlist is the next step,
+once scenes are embedded.)
 
 ---
 

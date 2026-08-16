@@ -372,24 +372,22 @@ def cmd_dj(args) -> int:
 
 
 def cmd_flag(args) -> int:
-    """Launch the real-time flagging web UI (README feature #2)."""
+    """Launch the peaks-vr control panel + flagging web UI."""
     from .web.flagging import run, run_demo
 
     if args.demo:
         run_demo(web_host=args.web_host, web_port=args.web_port,
-                 labels_path=args.labels, profile=args.profile)
+                 labels_path=args.labels, profile=args.profile,
+                 media_root=args.media, cache_root=args.cache, model=args.model)
         return 0
     if not args.listen and not args.host:
         print("  ✗ need --listen (HereSphere timestamp server) or --host "
               "<headset-ip> (DeoVR remote), or --demo", file=sys.stderr)
         return 2
-    sampler = None
-    if args.preview:
-        # Optional live de-warped preview — needs ffmpeg on PATH.
-        sampler = FrameSampler(interval_seconds=args.interval, mode="interval")
     run(args.host, args.port, listen=args.listen, ts_port=args.ts_port,
         web_host=args.web_host, web_port=args.web_port, labels_path=args.labels,
-        profile=args.profile, byteorder=args.byteorder, sampler=sampler)
+        profile=args.profile, byteorder=args.byteorder,
+        media_root=args.media, cache_root=args.cache, model=args.model)
     return 0
 
 
@@ -485,10 +483,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="labels JSON file to append marks to")
     fl.add_argument("--byteorder", default="big", choices=["big", "little"],
                     help="remote length-prefix endianness (default: big)")
-    fl.add_argument("--preview", action="store_true",
-                    help="enable the live de-warped frame preview (needs ffmpeg)")
-    fl.add_argument("--interval", type=float, default=2.0,
-                    help="preview sampler interval seconds (default: 2)")
+    fl.add_argument("--media", default=None,
+                    help="library directory to enable the Embed tab (e.g. /data)")
     fl.add_argument("--demo", action="store_true",
                     help="run with a synthetic feed — no headset required")
     fl.set_defaults(func=cmd_flag)

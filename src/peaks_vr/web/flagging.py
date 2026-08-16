@@ -44,8 +44,14 @@ try:
         time: float
         in_time: float | None = None
         out_time: float | None = None
+
+    class EmbedBody(BaseModel):
+        interval: float = 8.0
+        vr: bool = True
+        hwaccel: str = "auto"
 except ImportError:  # pragma: no cover - only when fastapi/pydantic absent
     MarkBody = None  # type: ignore
+    EmbedBody = None  # type: ignore
 
 
 # --- the playback mirror ----------------------------------------------------
@@ -172,16 +178,69 @@ class MarkResult:
     total: int
 
 
+# model name → cache subdirectory (matches embedding._CANONICAL)
+_CANONICAL_MODEL = {"fake": "fake", "dino": "dinov2", "clip": "clip"}
+
+
+def _reprojector_for(path: str):
+    """Build a VR de-warp for a file from its filename, or None if unrecognized."""
+    from ..reprojection import Reprojector
+    from ..vr_format import detect
+
+    fmt = detect(Path(path).name)
+    return Reprojector.for_format(fmt) if fmt.is_known else None
+
+
+def embed_job(job, mgr, *, media_root: str, cache_root: str, model: str,
+              interval: float, vr: bool, hwaccel: str) -> None:
+    """Background task: embed every video under ``media_root`` (resumable)."""
+    from ..cache import EmbeddingCache
+    from ..cli import iter_video_files, scene_from_path
+    from ..embedding import get_embedder
+    from ..pipeline import embed_library
+    from ..sampling import FrameSampler
+
+    videos = iter_video_files([media_root])
+    job.total = len(videos)
+    job.log(f"found {len(videos)} file(s) under {media_root}")
+    if not videos:
+        return
+    embedder = get_embedder(model)
+    cache = EmbeddingCache(cache_root)
+    hw = "" if hwaccel == "none" else hwaccel
+    for path in videos:
+        if mgr.should_stop():
+            job.log("stop requested — halting")
+            break
+        job.current = Path(path).name
+        reproject = _reprojector_for(path) if vr else None
+        if vr and reproject is None:
+            job.log(f"! {job.current}: VR format not recognized — skipping de-warp")
+        sampler = FrameSampler(interval_seconds=interval, mode="sparse",
+                               hwaccel=hw, reproject=reproject)
+        s = embed_library([scene_from_path(path)], sampler, embedder, cache,
+                          log=job.log)
+        for k in ("embedded", "skipped", "failed", "frames"):
+            job.stats[k] = job.stats.get(k, 0) + s.get(k, 0)
+        job.done += 1
+
+
 def create_app(mirror: PlaybackMirror, store: LabelStore, *,
-               profile: str = DEFAULT_PROFILE, sampler=None):
+               profile: str = DEFAULT_PROFILE, sampler=None,
+               media_root: str | None = None, cache_root: str = "cache",
+               model: str = "dino", jobs=None):
     """Build the FastAPI app. ``sampler`` (a configured
     :class:`peaks_vr.sampling.FrameSampler`, optionally with a ``reproject``)
     enables the live de-warped preview; without it ``/api/frame`` returns 503."""
     from fastapi import FastAPI, HTTPException, Response
     from fastapi.responses import FileResponse
 
-    app = FastAPI(title="peaks-vr flagging")
+    from .jobs import JobManager
+
+    app = FastAPI(title="peaks-vr")
     active_profile = profile
+    jobs = jobs or JobManager()
+    model_dir = _CANONICAL_MODEL.get(model, model)
 
     def _state_dict() -> dict:
         connected, st = mirror.snapshot()
@@ -246,6 +305,88 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
         img.save(buf, format="JPEG", quality=85)
         return Response(content=buf.getvalue(), media_type="image/jpeg")
 
+    # --- control panel: library + embedding ---------------------------------
+
+    def _cache_count() -> int:
+        from ..cache import EmbeddingCache
+        try:
+            return len(list(EmbeddingCache(cache_root).keys(model_dir)))
+        except Exception:
+            return 0
+
+    def _safe_under_media(path: str) -> str:
+        """Resolve ``path`` and ensure it stays within media_root."""
+        base = Path(media_root or ".").resolve()
+        p = (base / path).resolve() if not Path(path).is_absolute() else Path(path).resolve()
+        if media_root and base not in p.parents and p != base:
+            raise HTTPException(400, "path outside the media directory")
+        return str(p)
+
+    @app.get("/api/config")
+    def config():
+        return {"media_root": media_root, "model": model,
+                "has_media": bool(media_root and Path(media_root).is_dir())}
+
+    @app.get("/api/library")
+    def library(limit: int = 2000):
+        from ..cli import iter_video_files
+        if not media_root:
+            return {"count": 0, "files": []}
+        files = iter_video_files([media_root])
+        return {"count": len(files),
+                "files": [{"path": f, "name": Path(f).name} for f in files[:limit]]}
+
+    @app.get("/api/stats")
+    def stats():
+        return {"embedded": _cache_count(), "model": model,
+                "running": jobs.running}
+
+    @app.get("/api/preview")
+    def preview(path: str, time: float = 60.0, fov: float = 100.0,
+                pitch: float = 0.0, yaw: float = 0.0, hwaccel: str = "none"):
+        from ..reprojection import Reprojector
+        from ..sampling import FrameSampler
+        from ..vr_format import detect
+
+        real = _safe_under_media(path)
+        fmt = detect(Path(real).name)
+        if not fmt.is_known:
+            raise HTTPException(422, f"VR format not recognized from the filename "
+                                f"({Path(real).name}) — needs a hint like _180_sbs")
+        rep = Reprojector.for_format(fmt, viewport_fov_deg=fov, pitch=pitch, yaw=yaw)
+        hw = "" if hwaccel == "none" else hwaccel
+        s = FrameSampler(hwaccel=hw, reproject=rep)
+        try:
+            img = s.grab_frame(real, time)
+        except Exception as exc:
+            raise HTTPException(503, f"could not render preview: {exc}")
+        from io import BytesIO
+        buf = BytesIO(); img.save(buf, format="JPEG", quality=90)
+        return Response(content=buf.getvalue(), media_type="image/jpeg")
+
+    @app.post("/api/embed/start")
+    def embed_start(body: EmbedBody):
+        if not media_root:
+            raise HTTPException(400, "no media directory configured (mount /data)")
+        try:
+            jobs.start("embed", lambda job, mgr: embed_job(
+                job, mgr, media_root=media_root, cache_root=cache_root,
+                model=model, interval=body.interval, vr=body.vr,
+                hwaccel=body.hwaccel))
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc))
+        return {"started": True}
+
+    @app.post("/api/embed/stop")
+    def embed_stop():
+        jobs.stop()
+        return {"stopping": True}
+
+    @app.get("/api/embed/status")
+    def embed_status():
+        snap = jobs.status()
+        return {"job": snap, "embedded": _cache_count(), "running": jobs.running}
+
     return app
 
 
@@ -261,13 +402,15 @@ def run(hs_host: str | None = None, hs_port: int = 23554, *,
         listen: bool = False, ts_port: int = 23573,
         web_host: str = "0.0.0.0", web_port: int = DEFAULT_WEB_PORT,
         labels_path: str = "labels.json", profile: str = DEFAULT_PROFILE,
-        byteorder: str = "big", sampler=None) -> None:
-    """Run the flagging UI against a real HereSphere headset.
+        byteorder: str = "big", sampler=None,
+        media_root: str | None = None, cache_root: str = "cache",
+        model: str = "dino") -> None:
+    """Run the peaks-vr control panel + flagging UI.
 
     Two ways to source playback: ``listen=True`` receives HereSphere's
     **timestamp server** push on ``ts_port`` (the headset connects to us — the
     container default); otherwise we dial the headset's DeoVR remote at
-    ``hs_host:hs_port``.
+    ``hs_host:hs_port``. ``media_root`` (e.g. ``/data``) enables the Embed tab.
     """
     mirror = PlaybackMirror()
     if listen:
@@ -277,20 +420,23 @@ def run(hs_host: str | None = None, hs_port: int = 23554, *,
         mirror.start_feeder(remote_feeder(hs_host, hs_port, byteorder=byteorder))
         source = f"remote {hs_host}:{hs_port}"
     store = LabelStore(labels_path)
-    app = create_app(mirror, store, profile=profile, sampler=sampler)
-    print(f"peaks-vr flagging UI → http://{web_host}:{web_port}  "
-          f"(source: {source}, profile '{profile}')")
+    app = create_app(mirror, store, profile=profile, sampler=sampler,
+                     media_root=media_root, cache_root=cache_root, model=model)
+    print(f"peaks-vr → http://{web_host}:{web_port}  "
+          f"(source: {source}, media: {media_root or 'none'}, model '{model}')")
     _serve(app, web_host, web_port)
 
 
 def run_demo(*, web_host: str = "127.0.0.1", web_port: int = DEFAULT_WEB_PORT,
              labels_path: str = "labels.demo.json",
-             profile: str = DEFAULT_PROFILE) -> None:
-    """Run the flagging UI with a synthetic feed — no headset required."""
+             profile: str = DEFAULT_PROFILE, media_root: str | None = None,
+             cache_root: str = "cache", model: str = "fake") -> None:
+    """Run the control panel with a synthetic playback feed — no headset."""
     mirror = PlaybackMirror()
     mirror.start_feeder(demo_feeder())
     store = LabelStore(labels_path)
-    app = create_app(mirror, store, profile=profile)
-    print(f"peaks-vr flagging DEMO → http://{web_host}:{web_port}  "
+    app = create_app(mirror, store, profile=profile, media_root=media_root,
+                     cache_root=cache_root, model=model)
+    print(f"peaks-vr DEMO → http://{web_host}:{web_port}  "
           f"(synthetic playback, marks → {labels_path})")
     _serve(app, web_host, web_port)

@@ -86,7 +86,7 @@ def test_index_page_served(tmp_path):
     client, _, _ = _client(tmp_path)
     r = client.get("/")
     assert r.status_code == 200
-    assert "flag moments" in r.text
+    assert "Embed library" in r.text and "Flag moments" in r.text
 
 
 def test_timestamp_feeder_populates_mirror(tmp_path):
