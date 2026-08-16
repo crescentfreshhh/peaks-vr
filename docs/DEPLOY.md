@@ -89,11 +89,25 @@ one-time cost per file, **resumable**, and independent of HereSphere.
 **How long should embedding take?** VR sampling opens each file **once**, decodes
 **keyframes only** in a single process, and de-warps them in-process (the same
 one-decoder-per-scene approach that makes 2D peaks fast) — then the **AI model
-runs on the GPU**. Expect roughly **1–2 min** per 20–40 min 8K scene. Levers:
-raise the **Interval** (fewer samples) or use a lighter `PEAKS_VR_MODEL`. The
-**Decode** dropdown affects only the flat (non-VR) path; VR de-warp always
-decodes in-process. The Embed tab shows the current file's elapsed seconds so you
-can watch it progress.
+runs on the GPU**. With **Decode = auto/cuda** the heavy 8K HEVC keyframe decode
+runs on the GPU (NVDEC), one decoder context per scene, and only the light v360
+de-warp stays on CPU — expect roughly **1–2 min** per 20–40 min 8K scene. On CPU
+decode (no GPU, or Decode = cpu) the same 8K scene is slower — several minutes —
+but still completes. If NVDEC can't handle a particular file (e.g. a 10-bit or
+alpha profile), decode **falls back to CPU automatically** and logs one line to
+the container log (`docker logs peaks-vr` → `NVDEC decode unavailable … using CPU
+decode`); the file is never failed just because the GPU path didn't take.
+
+Levers: raise the **Interval** (fewer samples) or use a lighter `PEAKS_VR_MODEL`.
+The Embed tab shows the current file's elapsed seconds so you can watch it
+progress.
+
+**Per-scene timeout.** Each scene has a ceiling (default **900 s** = 15 min);
+past it the scene is marked failed and the run moves on, so one pathological file
+can't wedge the batch. Genuinely heavy 8K scenes can take a few minutes, so the
+old 180 s cap was too low and could kill legitimate files — 900 s is the new
+default. Set it per run in the Embed tab's **Per-scene timeout (s)** field (0 =
+no limit), or via `PEAKS_SCENE_TIMEOUT` for CLI embeds.
 
 ### ② Flag moments (needs HereSphere playback)
 
@@ -125,6 +139,7 @@ once scenes are embedded.)
 | `PEAKS_VR_REMOTE_HOST` | _(unset)_ | set to the headset IP to **dial the DeoVR remote** instead of listening |
 | `PEAKS_VR_REMOTE_PORT` | `23554` | DeoVR remote port |
 | `PEAKS_VR_PREVIEW` | _(off)_ | `1` = live de-warped preview (needs ffmpeg + an embedded scene) |
+| `PEAKS_SCENE_TIMEOUT` | `900` | per-scene sampling ceiling in seconds (`0` = off); fallback for CLI embeds — the Embed tab's field overrides it per run |
 
 ## Path mapping note
 

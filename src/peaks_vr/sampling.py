@@ -216,15 +216,48 @@ def _sparse_extract_worker(
     )
 
 
+def _open_container_for_decode(path: str, hwaccel: str):
+    """Open ``path`` with NVDEC hardware decode when ``hwaccel`` is cuda/auto,
+    else plain CPU. Returns the container. On any hardware-init failure (no
+    libcuda in the container, unsupported codec/profile — e.g. 10-bit or alpha),
+    logs one line to stderr and falls back to CPU decode, so a file is never
+    failed just because the GPU path didn't take. One context per scene (this is
+    called once per file), so there's no per-sample NVDEC-init storm."""
+    import sys
+
+    import av
+
+    if hwaccel in ("cuda", "auto"):
+        try:
+            from av.codec.hwaccel import HWAccel
+
+            hw = HWAccel(device_type="cuda", allow_software_fallback=True)
+            return av.open(path, hwaccel=hw)
+        except Exception as exc:  # no CUDA, old PyAV, unsupported profile, …
+            sys.stderr.write(
+                f"[peaks-vr] NVDEC decode unavailable for {path} "
+                f"({type(exc).__name__}: {exc}); using CPU decode\n"
+            )
+    return av.open(path)
+
+
 def _sparse_dewarp_worker(
-    path: str, interval: float, crop: int, out_path: str, filter_chain: str
+    path: str, interval: float, crop: int, out_path: str, filter_chain: str,
+    hwaccel: str = "",
 ) -> None:
     """Runs in a CHILD process: like `_sparse_extract_worker`, but applies the VR
     de-warp (one-eye crop → v360 → model resize/crop) to each decoded keyframe
     via a SINGLE in-process libavfilter graph. The file is opened ONCE and only
     keyframes are decoded, so cost scales with samples — the fast path that makes
     2D peaks quick, now with the reprojection. `filter_chain` is a comma-joined
-    ffmpeg filtergraph ending at the model's crop×crop input geometry."""
+    ffmpeg filtergraph ending at the model's crop×crop input geometry.
+
+    ``hwaccel`` cuda/auto decodes the (expensive, 8K) HEVC keyframes on the GPU
+    via NVDEC; the light v360 de-warp stays on CPU. Frames are transferred to
+    system memory automatically, so the filtergraph is fed the same way as the
+    CPU path. Any GPU-init failure falls back to CPU decode (see
+    :func:`_open_container_for_decode`). Running in a spawned child isolates CUDA
+    init from the parent."""
     import av
     import numpy as np
 
@@ -238,7 +271,7 @@ def _sparse_dewarp_worker(
     times: list[float] = []
     frames: list = []
 
-    with av.open(path) as container:
+    with _open_container_for_decode(path, hwaccel) as container:
         if not container.streams.video:
             raise RuntimeError(f"no video stream in {path}")
         stream = container.streams.video[0]
@@ -284,7 +317,17 @@ def _sparse_dewarp_worker(
 
             if graph is None:
                 graph = av.filter.Graph()
-                node = graph.add_buffer(template=stream)
+                # Build the buffer from the ACTUAL decoded frame's geometry/format
+                # so an NVDEC-downloaded frame (nv12) is described correctly, not
+                # the stream's coded format. Falls back to the stream template on
+                # older PyAV that lacks the explicit kwargs (the CPU path).
+                try:
+                    node = graph.add_buffer(
+                        width=frame.width, height=frame.height,
+                        format=frame.format.name, time_base=stream.time_base,
+                    )
+                except (TypeError, ValueError):
+                    node = graph.add_buffer(template=stream)
                 for spec in filter_chain.split(","):
                     name, _, args = spec.partition("=")
                     filt = graph.add(name.strip(), args.strip())
@@ -320,7 +363,7 @@ class FrameSampler:
         hwaccel: str = "",
         queue_frames: int = 256,
         pipeline: str = "raw",
-        scene_timeout: float = 180.0,
+        scene_timeout: float = 900.0,
         reproject: "Reprojector | None" = None,
     ):
         """`frame_size`: short-side pixels for the JPEG pipeline (0 = original
@@ -568,7 +611,7 @@ class FrameSampler:
         ctx = mp.get_context("spawn")  # fresh interpreter: no CUDA-fork hazards
         proc = ctx.Process(
             target=_sparse_dewarp_worker,
-            args=(path, self.interval, crop, out_path, filter_chain),
+            args=(path, self.interval, crop, out_path, filter_chain, self.hwaccel),
         )
         try:
             proc.start()

@@ -8,6 +8,9 @@
 #   PEAKS_VR_MEDIA      library dir (default /data) — enables the Embed tab
 #   PEAKS_VR_MODEL      embedder for the Embed tab: dino (default) | clip | fake
 #   PEAKS_VR_ASSUME     format for files with no filename hint (default 180_sbs)
+#   PEAKS_SCENE_TIMEOUT per-scene sampling ceiling in seconds (default 900, 0 =
+#                        off) — the fallback for CLI embeds; the Embed tab has its
+#                        own "Per-scene timeout" field that overrides this per run
 #   PEAKS_VR_PROFILE    taste profile the ❤️ marks belong to (default apex)
 #   PEAKS_VR_BYTEORDER  length-prefix endianness: big (default) | little
 #   PEAKS_VR_REMOTE_HOST if set, DIAL the DeoVR remote at this IP instead of

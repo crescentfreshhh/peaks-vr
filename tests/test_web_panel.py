@@ -71,6 +71,39 @@ def test_embed_job_runs_and_reports(tmp_path):
     assert job["stats"]["failed"] == 2
 
 
+def test_embed_job_honors_scene_timeout(tmp_path, monkeypatch):
+    """The sampling FrameSampler must carry the per-scene timeout: explicit body
+    value wins, else PEAKS_SCENE_TIMEOUT, else the FrameSampler default (900)."""
+    import peaks_vr.pipeline as pipeline
+    from peaks_vr.web.flagging import embed_job
+
+    media = tmp_path / "m"; media.mkdir()
+    (media / "clip_180_sbs.mp4").write_bytes(b"x")
+
+    seen = []
+    monkeypatch.setattr(pipeline, "embed_library",
+                        lambda scenes, sampler, *a, **k: seen.append(sampler.scene_timeout) or {})
+
+    class J:
+        def __init__(self): self.total = self.done = 0; self.stats = {}; self.current = ""
+        def log(self, *a): pass
+        def set_current(self, n): self.current = n
+    class M:
+        def should_stop(self): return False
+
+    def run(**kw):
+        seen.clear()
+        embed_job(J(), M(), media_root=str(media), cache_root=str(tmp_path / "c"),
+                  model="fake", interval=8.0, vr=False, hwaccel="none", **kw)
+        return seen[0]
+
+    assert run(scene_timeout=42.0) == 42.0            # explicit wins
+    monkeypatch.setenv("PEAKS_SCENE_TIMEOUT", "300")
+    assert run() == 300.0                             # env honored
+    monkeypatch.delenv("PEAKS_SCENE_TIMEOUT")
+    assert run() == 900.0                             # built-in default
+
+
 def test_embed_start_requires_media(tmp_path):
     client, _ = _panel(tmp_path, with_media=False)
     # media dir exists but is empty → job runs, finds 0 files

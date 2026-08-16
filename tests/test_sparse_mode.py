@@ -150,7 +150,7 @@ def test_sparse_timeout_kills_the_worker(video):
 def test_scene_timeout_default_and_env(monkeypatch, tmp_path):
     from peaks_vr.config import Config
 
-    assert Config.load(tmp_path / "none.toml").sampling.scene_timeout == 180.0
+    assert Config.load(tmp_path / "none.toml").sampling.scene_timeout == 900.0
     monkeypatch.setenv("PEAKS_SCENE_TIMEOUT", "45")
     assert Config.load(tmp_path / "none.toml").sampling.scene_timeout == 45.0
 

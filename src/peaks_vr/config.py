@@ -45,7 +45,7 @@ class SamplingConfig:
     mode: str = "sparse"
     hwaccel: str = "cuda"  # "" | "cuda" | "auto" — GPU (NVDEC) decode, default on
     pipeline: str = "raw"  # "raw" (fast: frames straight to GPU) | "jpeg"
-    scene_timeout: float = 180.0  # per-scene sampling ceiling (s); 0 disables
+    scene_timeout: float = 900.0  # per-scene sampling ceiling (s); 0 disables
 
 
 @dataclass

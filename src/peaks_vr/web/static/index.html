@@ -126,9 +126,16 @@
         <div><label class="f">VR de-warp</label>
           <select id="emVr"><option value="1">on</option><option value="0">off (flat)</option></select></div>
       </div>
+      <div class="row" style="margin-top:8px">
+        <div style="flex:1"><label class="f">Per-scene timeout (s)</label>
+          <input id="emTimeout" type="number" value="900" min="0" step="30"></div>
+      </div>
       <div class="note">VR de-warp opens each file once and decodes keyframes
-        in-process (fast); the AI model always uses the GPU. Larger interval =
-        fewer samples = faster.</div>
+        in-process; <b>Decode: auto/cuda</b> uses the GPU (NVDEC) for the heavy
+        8K decode with a CPU fallback. The AI model always uses the GPU. Larger
+        interval = fewer samples = faster. Timeout is the ceiling per scene
+        before it's marked failed (0 = no limit); heavy 8K scenes may need
+        several minutes.</div>
       <div class="row" style="margin-top:12px">
         <button class="primary" id="emStart" style="flex:2">Start embedding</button>
         <button id="emStop" style="flex:1" disabled>Stop</button>
@@ -233,7 +240,7 @@ $('#pvGo').onclick = async () => {
   $('#pvGo').disabled=false;
 };
 $('#emStart').onclick = async () => {
-  const body={interval:parseFloat($('#emInterval').value), vr:$('#emVr').value==='1', hwaccel:$('#emHw').value, assume:$('#assume').value};
+  const body={interval:parseFloat($('#emInterval').value), vr:$('#emVr').value==='1', hwaccel:$('#emHw').value, assume:$('#assume').value, scene_timeout:parseFloat($('#emTimeout').value)};
   const r=await fetch('/api/embed/start',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
   if(r.ok){ $('#emProgWrap').classList.remove('hide'); pollEmbed(); }
   else { const e=await r.json().catch(()=>({detail:r.statusText})); alert(e.detail||'could not start'); }

@@ -72,6 +72,27 @@ def test_inproc_vr_dewarp_end_to_end(tmp_path):
     assert times == sorted(times)
 
 
+def test_inproc_vr_dewarp_hwaccel_auto_falls_back_to_cpu(tmp_path):
+    """`hwaccel="auto"` asks for NVDEC; with no CUDA here it must transparently
+    fall back to CPU decode and yield the SAME frames as `hwaccel=""` — the
+    mandatory total fallback so a file is never failed by the GPU path."""
+    pytest.importorskip("av")
+    vid = tmp_path / "scene_180_sbs.mp4"
+    _make_sbs(vid)
+    rep = Reprojector.for_format(detect("scene_180_sbs.mp4"), input_size=256)
+
+    def run(hw):
+        s = FrameSampler(interval_seconds=4.0, mode="sparse", reproject=rep, hwaccel=hw)
+        return list(s.iter_frames_raw(str(vid), resize_short=256, crop=224))
+
+    cpu, auto = run(""), run("auto")
+    assert len(auto) == len(cpu) >= 3
+    for (tc, ac), (ta, aa) in zip(cpu, auto):
+        assert ta == tc
+        assert aa.shape == (224, 224, 3) and aa.dtype == np.uint8
+        assert np.array_equal(aa, ac)
+
+
 # --- fallback: per-sample ffmpeg seek path (used only if `av` is missing) ----
 
 def _fake_run_factory(record, *, crop):

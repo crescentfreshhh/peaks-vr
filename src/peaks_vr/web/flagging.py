@@ -48,8 +48,9 @@ try:
     class EmbedBody(BaseModel):
         interval: float = 8.0
         vr: bool = True
-        hwaccel: str = "auto"   # affects the flat path; VR decodes in-process
+        hwaccel: str = "auto"   # "" | "cuda" | "auto" — NVDEC decode for VR/flat
         assume: str | None = None
+        scene_timeout: float | None = None  # per-scene ceiling (s); None = env/default
 except ImportError:  # pragma: no cover - only when fastapi/pydantic absent
     MarkBody = None  # type: ignore
     EmbedBody = None  # type: ignore
@@ -208,15 +209,28 @@ def failure_log_for(cache_root: str):
 
 def embed_job(job, mgr, *, media_root: str, cache_root: str, model: str,
               interval: float, vr: bool, hwaccel: str,
-              assume: str | None = None, paths: list[str] | None = None) -> None:
+              assume: str | None = None, paths: list[str] | None = None,
+              scene_timeout: float | None = None) -> None:
     """Background task: embed videos (resumable). Scans ``media_root`` unless an
     explicit ``paths`` list is given (used for retrying just the failures).
-    Each casualty is recorded in the failure log; a later success clears it."""
+    Each casualty is recorded in the failure log; a later success clears it.
+
+    ``scene_timeout`` is the per-scene sampling ceiling in seconds (0 disables).
+    When None it comes from ``PEAKS_SCENE_TIMEOUT``, falling back to the
+    :class:`FrameSampler` default — heavy 8K scenes need well over the old 180s."""
+    import os
+
     from ..cache import EmbeddingCache
     from ..cli import iter_video_files, scene_from_path
     from ..embedding import get_embedder
     from ..pipeline import embed_library
     from ..sampling import FrameSampler
+
+    if scene_timeout is None:
+        env = os.environ.get("PEAKS_SCENE_TIMEOUT")
+        scene_timeout = float(env) if env else FrameSampler().scene_timeout
+    job.log(f"per-scene timeout: {scene_timeout:.0f}s"
+            + (" (disabled)" if not scene_timeout else ""))
 
     videos = paths if paths is not None else iter_video_files([media_root])
     job.total = len(videos)
@@ -241,7 +255,8 @@ def embed_job(job, mgr, *, media_root: str, cache_root: str, model: str,
                 job.log(f"! {job.current}: VR format unknown (no hint, no assume) "
                         f"— skipping de-warp")
         sampler = FrameSampler(interval_seconds=interval, mode="sparse",
-                               hwaccel=hw, reproject=reproject)
+                               hwaccel=hw, reproject=reproject,
+                               scene_timeout=scene_timeout)
         s = embed_library([scene_from_path(path)], sampler, embedder, cache,
                           log=job.log, failure_log=failures)
         for k in ("embedded", "skipped", "failed", "frames"):
@@ -406,7 +421,7 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
             jobs.start("embed", lambda job, mgr: embed_job(
                 job, mgr, media_root=media_root, cache_root=cache_root,
                 model=model, interval=body.interval, vr=body.vr,
-                hwaccel=body.hwaccel,
+                hwaccel=body.hwaccel, scene_timeout=body.scene_timeout,
                 assume=body.assume if body.assume is not None else assume_default))
         except RuntimeError as exc:
             raise HTTPException(409, str(exc))

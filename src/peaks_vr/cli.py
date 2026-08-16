@@ -116,8 +116,10 @@ def cmd_embed(args) -> int:
                       f"(no hint/assume); skipping de-warp", file=sys.stderr)
             else:
                 reproject = Reprojector.for_format(fmt)
+        st_kw = ({"scene_timeout": args.scene_timeout}
+                 if getattr(args, "scene_timeout", None) is not None else {})
         sampler = FrameSampler(interval_seconds=args.interval, mode="sparse",
-                               hwaccel=hwaccel, reproject=reproject)
+                               hwaccel=hwaccel, reproject=reproject, **st_kw)
         s = embed_library([scene_from_path(path)], sampler, embedder, cache,
                           total=total, failure_log=failures)
         for k in stats:
@@ -426,11 +428,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="VR de-warp: detect format + reproject one eye to a flat "
                         "viewport before embedding (needs ffmpeg on PATH)")
     e.add_argument("--hwaccel", default="auto", choices=["none", "auto", "cuda", "cpu"],
-                   help="hardware decode for the flat/interval path (default auto); "
-                        "VR de-warp decodes keyframes in-process regardless")
+                   help="hardware (NVDEC) decode, default auto; VR de-warp decodes "
+                        "keyframes in-process and uses NVDEC when cuda/auto, with a "
+                        "CPU fallback")
     e.add_argument("--assume", default="180_sbs",
                    help="format to assume for files with no filename hint "
                         "(e.g. 180_sbs, 180_tb, mkx200_sbs; '' to skip them)")
+    e.add_argument("--scene-timeout", type=float, default=None,
+                   help="per-scene sampling ceiling in seconds (0 disables); "
+                        "default from PEAKS_SCENE_TIMEOUT or the built-in 900s")
     e.add_argument("--retry-failed", action="store_true",
                    help="re-embed only the files in the failure log")
     e.set_defaults(func=cmd_embed)
