@@ -23,6 +23,7 @@ class Job:
         self.total = 0
         self.done = 0
         self.current = ""              # the item being processed now
+        self.current_started: float | None = None  # monotonic when it started
         self.error: str | None = None
         self.stats: dict = {}
         self.started = time.monotonic()
@@ -32,18 +33,27 @@ class Job:
     def log(self, line: str) -> None:
         self._log.append(line.rstrip())
 
+    def set_current(self, name: str) -> None:
+        """Mark the item now being processed and (re)start its elapsed timer."""
+        self.current = name
+        self.current_started = time.monotonic()
+
     def snapshot(self) -> dict:
         elapsed = (self.finished or time.monotonic()) - self.started
         eta = None
         if self.status == "running" and self.done and self.total:
             per = elapsed / self.done
             eta = round(per * (self.total - self.done), 1)
+        current_elapsed = None
+        if self.status == "running" and self.current_started is not None:
+            current_elapsed = round(time.monotonic() - self.current_started, 1)
         return {
             "name": self.name,
             "status": self.status,
             "total": self.total,
             "done": self.done,
             "current": self.current,
+            "current_elapsed": current_elapsed,
             "error": self.error,
             "stats": self.stats,
             "elapsed": round(elapsed, 1),

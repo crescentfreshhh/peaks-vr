@@ -110,6 +110,15 @@ def test_failures_recorded_listed_retried_cleared(tmp_path):
     assert client.get("/api/failures").json()["count"] == 0
 
 
+def test_embed_status_reports_current_elapsed(tmp_path):
+    from peaks_vr.web.jobs import Job
+    j = Job("embed")
+    j.set_current("scene.mp4")
+    snap = j.snapshot()
+    assert snap["current"] == "scene.mp4"
+    assert snap["current_elapsed"] is not None and snap["current_elapsed"] >= 0
+
+
 def test_retry_with_no_failures_is_noop(tmp_path):
     client, _ = _panel(tmp_path)
     r = client.post("/api/embed/retry")

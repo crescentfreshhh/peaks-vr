@@ -232,7 +232,7 @@ def embed_job(job, mgr, *, media_root: str, cache_root: str, model: str,
         if mgr.should_stop():
             job.log("stop requested — halting")
             break
-        job.current = Path(path).name
+        job.set_current(Path(path).name)
         reproject = None
         if vr:
             probe = FrameSampler(hwaccel=hw)  # for probe_dimensions only

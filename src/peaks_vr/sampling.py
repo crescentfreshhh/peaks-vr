@@ -470,9 +470,12 @@ class FrameSampler:
 
         def _cmd(t: float, hwaccel: str) -> list[str]:
             args = ["-hwaccel", hwaccel] if hwaccel else []
+            # -noaccurate_seek: take the keyframe at/before t instead of decoding
+            # the whole GOP forward to the exact time — ~1 decoded frame per
+            # sample (the sparse convention; snaps to keyframes within a GOP).
             return [
                 self.ffmpeg, "-v", "error", *args,
-                "-ss", f"{t:g}", "-i", path, "-vf", vf,
+                "-ss", f"{t:g}", "-noaccurate_seek", "-i", path, "-vf", vf,
                 "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
             ]
 

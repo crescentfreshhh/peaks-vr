@@ -75,6 +75,19 @@ def test_reprojector_sbs_equirect_filter():
     assert "h_fov=100" in filt
 
 
+def test_reprojector_downscales_before_v360():
+    # the pre-scale must sit between the eye crop and the (expensive) v360 stage
+    fmt = detect("s_180_sbs.mp4")
+    filt = Reprojector.for_format(fmt, input_size=1600).ffmpeg_filter()
+    assert "scale=1600:1600" in filt
+    assert filt.index("crop=iw/2") < filt.index("scale=1600") < filt.index("v360")
+
+
+def test_reprojector_input_size_zero_skips_prescale():
+    filt = Reprojector.for_format(detect("s_180_sbs.mp4"), input_size=0).ffmpeg_filter()
+    assert "scale=" not in filt
+
+
 def test_reprojector_tb_fisheye_filter():
     fmt = detect("s_MKX200_tb.mp4")
     filt = Reprojector.for_format(fmt).ffmpeg_filter()
@@ -103,8 +116,8 @@ def test_sampler_with_reproject_prepends_dewarp():
     sampler = FrameSampler(interval_seconds=2, frame_size=288, reproject=rep)
     vf = sampler._vf()
     assert "v360=input=he" in vf
-    # de-warp comes before the model-input scale
-    assert vf.index("v360") < vf.index("scale=")
+    # de-warp comes before the model-input scale (the trailing scale, after v360)
+    assert vf.index("v360") < vf.rindex("scale=")
     # ...and also in the raw pipeline filtergraph
     raw = sampler._raw_vf(resize_short=256, crop=224)
     assert "v360=input=he" in raw

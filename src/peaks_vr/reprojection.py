@@ -44,6 +44,11 @@ class Reprojector:
     plausible second viewport to embed (an open question in the README).
     ``out_size`` is the square edge, in pixels, of the emitted viewport; the
     sampler's own resize/crop takes it to the model's input geometry afterward.
+
+    ``input_size`` downscales the extracted eye *before* the ``v360`` stage. The
+    reprojection cost scales with input pixels, and a raw 8K eye is ~3840² — far
+    more than needed for a 224px model input. Scaling to ~1600² first cuts the
+    v360 CPU cost ~5–7× with no visible quality loss. 0 disables the pre-scale.
     """
 
     fmt: VRFormat
@@ -51,6 +56,7 @@ class Reprojector:
     yaw: float = 0.0
     pitch: float = 0.0
     out_size: int = 512
+    input_size: int = 1600
 
     # --- one-eye crop -------------------------------------------------------
 
@@ -101,8 +107,13 @@ class Reprojector:
         Compose this *before* the sampler's resize/crop. Raises for projections
         that aren't supported yet, so an unsupported scene fails loudly rather
         than silently embedding garbage.
+
+        Order: one-eye crop → downscale (``input_size``) → v360. The downscale
+        sits before v360 so the expensive reprojection runs on a small frame.
         """
-        parts = [p for p in (self._eye_crop(), self._v360()) if p]
+        pre_scale = (f"scale={self.input_size}:{self.input_size}"
+                     if self.input_size else "")
+        parts = [p for p in (self._eye_crop(), pre_scale, self._v360()) if p]
         return ",".join(parts)
 
     @classmethod

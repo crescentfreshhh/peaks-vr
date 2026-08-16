@@ -64,8 +64,11 @@ def test_dewarp_seek_builds_correct_ffmpeg_and_yields_frames(tmp_path, monkeypat
     # the ffmpeg command carries seek, NVDEC, the v360 de-warp, and rawvideo
     cmd = cmds[0]
     assert "-ss" in cmd and "-hwaccel" in cmd and "cuda" in cmd
+    assert "-noaccurate_seek" in cmd            # keyframe-only decode
+    assert cmd.index("-ss") < cmd.index("-i")   # seek is an input option
     vf = cmd[cmd.index("-vf") + 1]
     assert "v360=input=he" in vf and "crop=iw/2:ih:0:0" in vf
+    assert "scale=1600:1600" in vf              # downscale before v360
     assert "crop=224:224" in vf
     assert "rawvideo" in cmd
 

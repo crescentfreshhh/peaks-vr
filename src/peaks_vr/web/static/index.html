@@ -245,7 +245,8 @@ async function pollEmbed(){
     const pct = j.total? Math.round(100*j.done/j.total):0;
     $('#emBar').style.width=pct+'%';
     const eta = j.eta_seconds!=null? `, ~${Math.round(j.eta_seconds/60)}m left`:'';
-    $('#emProg').textContent = `${j.status} · ${j.done}/${j.total} scenes${eta} · now: ${j.current||'—'}`;
+    const cur = j.current? `${j.current}${j.current_elapsed!=null?` (${Math.round(j.current_elapsed)}s)`:''}`:'—';
+    $('#emProg').textContent = `${j.status} · ${j.done}/${j.total} scenes${eta} · now: ${cur}`;
     $('#emLog').textContent = (j.log||[]).join('\n'); $('#emLog').scrollTop = $('#emLog').scrollHeight;
   }
   const running = s.running;

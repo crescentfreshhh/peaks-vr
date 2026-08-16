@@ -86,6 +86,15 @@ one-time cost per file, **resumable**, and independent of HereSphere.
    fail the file. To actually get GPU decode, ensure the unraid **Nvidia Driver**
    plugin is installed and the container has `--runtime=nvidia`.)
 
+**How long should embedding take?** With the **GPU working** (NVDEC decode +
+CUDA model), a typical 20–40 min 8K scene is ~**1–3 minutes**. On **CPU only**
+(no GPU reaching the container), expect ~**3–6 minutes** per 8K scene — and if you
+see 20+ minutes, the GPU almost certainly isn't active. Levers if you're
+CPU-bound: get the NVIDIA runtime working (the real fix — check `nvidia-smi` in
+the container console), raise the **Interval** (fewer samples), or use a lighter
+`PEAKS_VR_MODEL`. The Embed tab shows the current file's elapsed seconds so you
+can see a scene is progressing, not stuck.
+
 ### ② Flag moments (needs HereSphere playback)
 
 1. Find **this server's LAN IP** (unraid shows it; else `ip addr`/`ipconfig`),
