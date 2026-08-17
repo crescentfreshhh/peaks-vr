@@ -206,6 +206,15 @@ same profile the ❤️ flag marks feed).
 - Click a thumbnail to enlarge it. The header shows your total likes and the
   per-category breakdown.
 
+**Taste profiles (the picker at the top).** Every like/mark files into a named
+**taste profile**. The **Taste profile** dropdown (top of the page) switches which
+one is active, and **+ new** creates one (e.g. `dj`, `date_night`) — the choice is
+saved to `/config/active_profile` and sticks across restarts, so you don't need to
+set `PEAKS_VR_PROFILE` (that env var is now just the *initial* default). Marks, the
+DJ-taste 👍, and the recommender/DJ all read from the active profile; categories
+nest under it as `<profile>:<category>`. Keep everything in one profile, or run
+several (a DJ set profile, a flagging profile, different vibes).
+
 ### ④ Flag moments (needs HereSphere playback)
 
 1. Find **this server's LAN IP** (unraid shows it; else `ip addr`/`ipconfig`),

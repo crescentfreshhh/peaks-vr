@@ -85,6 +85,39 @@ def test_liked_vectors_span_all_categories(tmp_path):
 
 # --- HTTP surface -----------------------------------------------------------
 
+def test_profile_picker_switch_and_persist(tmp_path):
+    """The active taste profile is switchable at runtime and persisted to /config,
+    so it survives a restart without env vars — and everything profile-scoped
+    (taste base) follows it."""
+    cache_root = tmp_path / "cache"
+    _seed_cache(cache_root)
+    store = LabelStore(tmp_path / "labels.json")
+
+    def build():
+        return TestClient(create_app(PlaybackMirror(), store, media_root=None,
+                                     cache_root=str(cache_root), model="fake",
+                                     profile="apex"))
+
+    c = build()
+    assert c.get("/api/profiles").json() == {"active": "apex", "profiles": ["apex"]}
+    assert c.get("/api/config").json()["profile"] == "apex"
+    assert c.post("/api/profile", json={"profile": "dj"}).json()["active"] == "dj"
+    assert c.get("/api/taste/summary").json()["base"] == "dj"          # follows switch
+    assert set(c.get("/api/profiles").json()["profiles"]) == {"apex", "dj"}
+    # a fresh app (restart) with the same /config keeps the chosen profile
+    assert build().get("/api/config").json()["profile"] == "dj"
+
+
+def test_profile_name_sanitized(tmp_path):
+    _seed_cache(tmp_path / "cache")
+    store = LabelStore(tmp_path / "labels.json")
+    c = TestClient(create_app(PlaybackMirror(), store, media_root=None,
+                              cache_root=str(tmp_path / "cache"), model="fake"))
+    # colons (the category separator) and spaces are neutralised
+    assert c.post("/api/profile", json={"profile": "dj:hack me"}).json()["active"] \
+        == "dj_hack_me"
+
+
 def test_taste_endpoints_flow(tmp_path):
     client, _ = _app(tmp_path, base="dj")
     s = client.get("/api/taste/suggest?count=12").json()

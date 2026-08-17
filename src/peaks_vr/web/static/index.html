@@ -110,6 +110,12 @@
   <h1><span>peaks</span>-vr <a href="#" id="lock" class="mut hide" style="float:right;font-size:12px;font-weight:400">Lock 🔒</a></h1>
   <div class="sub">taste-driven moment discovery for VR video</div>
 
+  <div class="row" style="margin-bottom:12px;align-items:center;gap:8px">
+    <label class="f" style="margin:0;white-space:nowrap">Taste profile</label>
+    <select id="profileSel" style="flex:1;max-width:240px"></select>
+    <button id="profileNew" title="create a new profile">+ new</button>
+  </div>
+
   <div class="tabs">
     <div class="tab on" data-tab="embed" id="tab-embed">① Embed</div>
     <div class="tab" data-tab="qc" id="tab-qc">② QC</div>
@@ -351,6 +357,28 @@ document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
 });
 
 function fmt(t){ if(t==null) return '—'; const m=Math.floor(t/60), s=(t%60); return `${m}:${s.toFixed(1).padStart(4,'0')}`; }
+
+// ---------- taste profile picker ----------
+async function loadProfiles(){
+  let p; try{ p=await (await fetch('/api/profiles')).json(); }catch(e){ return; }
+  const sel=$('#profileSel'); sel.innerHTML='';
+  p.profiles.forEach(n=>{ const o=document.createElement('option'); o.value=n; o.textContent=n; sel.appendChild(o); });
+  sel.value=p.active;
+}
+async function switchProfile(name){
+  const r=await fetch('/api/profile',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({profile:name})});
+  if(!r.ok) return;
+  await loadProfiles();
+  // everything profile-scoped refreshes to the new bucket
+  tasteSummary(); loadMarks();
+  tasteLoaded=false;
+  if(!$('#pane-taste').classList.contains('hide')) loadTaste();
+}
+$('#profileSel').onchange=e=>switchProfile(e.target.value);
+$('#profileNew').onclick=()=>{
+  const name=(prompt('New taste profile name (e.g. dj, date_night):')||'').trim();
+  if(name) switchProfile(name);
+};
 
 // ================= EMBED =================
 async function loadConfig(){
@@ -660,7 +688,7 @@ async function loadMarks(){
 }
 
 // ---------- boot ----------
-loadConfig(); loadLibrary(); refreshStats(); pollEmbed(); loadFailures();
+loadConfig(); loadProfiles(); loadLibrary(); refreshStats(); pollEmbed(); loadFailures();
 pollMem(); setInterval(pollMem, 3000);
 pollFlag(); setInterval(pollFlag, 700); loadMarks();
 </script>

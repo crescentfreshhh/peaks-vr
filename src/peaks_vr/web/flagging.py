@@ -68,12 +68,16 @@ try:
         path: str | None = None
         category: str | None = None
         label: int = 1          # 1 = thumbs-up, 0 = thumbs-down
+
+    class ProfileBody(BaseModel):
+        profile: str = ""
 except ImportError:  # pragma: no cover - only when fastapi/pydantic absent
     MarkBody = None  # type: ignore
     EmbedBody = None  # type: ignore
     ReembedBody = None  # type: ignore
     LoginBody = None  # type: ignore
     TasteLikeBody = None  # type: ignore
+    ProfileBody = None  # type: ignore
 
 
 # --- the playback mirror ----------------------------------------------------
@@ -355,7 +359,38 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
     from ..memwatch import MemoryWatchdog, limit_from_env
 
     app = FastAPI(title="peaks-vr")
-    active_profile = profile
+
+    # --- active taste profile (switchable from the UI, persisted to /config) --
+    # `profile` (from PEAKS_VR_PROFILE / default) is only the initial value; the
+    # UI picker overrides it and the choice is saved beside the cache so it sticks
+    # across restarts without touching env vars. Categories still nest under it as
+    # <profile>:<category>.
+    from ..pipeline import safe_tag
+    _profile_path = Path(cache_root).parent / "active_profile"
+
+    def _load_active() -> str:
+        try:
+            val = _profile_path.read_text().strip()
+            return val or profile
+        except OSError:
+            return profile
+
+    _active = {"name": _load_active()}
+
+    def _profile() -> str:
+        return _active["name"]
+
+    def _set_active(name: str) -> str:
+        name = safe_tag((name or "").strip()) or profile
+        _active["name"] = name
+        try:
+            _profile_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = _profile_path.with_name(_profile_path.name + ".tmp")
+            tmp.write_text(name)
+            tmp.replace(_profile_path)
+        except OSError:
+            pass
+        return name
 
     # --- optional password gate (opt-in via PEAKS_VR_PASSWORD) ---------------
     _password = os.environ.get("PEAKS_VR_PASSWORD") or ""
@@ -473,15 +508,15 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
         times = sorted({t for t in (body.in_time, body.time, body.out_time)
                         if t is not None})
         for t in times:
-            store.add(key, float(t), 1, profile, scene_id=st.path)
+            store.add(key, float(t), 1, _profile(), scene_id=st.path)
         store.save()
-        pos, neg = store.counts(profile)
+        pos, neg = store.counts(_profile())
         return MarkResult(key=key, times=times, positives=pos,
                           total=pos + neg).__dict__
 
     @app.get("/api/marks")
     def marks(profile: str | None = None, limit: int = 50):
-        prof = profile or active_profile
+        prof = profile or _profile()
         labs = [l for l in store.for_profile(prof) if l.label == 1]
         labs.sort(key=lambda l: l.ts, reverse=True)
         return [{"key": l.key, "time": l.time, "scene_id": l.scene_id, "ts": l.ts}
@@ -523,8 +558,24 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
     @app.get("/api/config")
     def config():
         return {"media_root": media_root, "model": model,
-                "assume_default": assume_default,
+                "assume_default": assume_default, "profile": _profile(),
                 "has_media": bool(media_root and Path(media_root).is_dir())}
+
+    @app.get("/api/profiles")
+    def profiles():
+        """Pickable taste profiles: the base names that already have labels, plus
+        the active one and the built-in default. Categories (``base:cat``) are
+        collapsed to their base — they're managed inside the DJ taste tab."""
+        bases = {p.split(":", 1)[0] for p in store.profiles()}
+        bases |= {_profile(), profile}
+        return {"active": _profile(), "profiles": sorted(bases)}
+
+    @app.post("/api/profile")
+    def set_profile(body: ProfileBody):
+        """Switch the active taste profile (creating it if new). Persisted so it
+        survives a restart. All marks / DJ-taste likes go to this profile from
+        now on, and the recommender/DJ read from it."""
+        return {"active": _set_active(body.profile)}
 
     @app.get("/api/library")
     def library(limit: int = 2000):
@@ -727,24 +778,24 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
         from ..cache import EmbeddingCache
         from .. import taste as _taste
         cache = EmbeddingCache(cache_root)
-        frames = _taste.suggest_frames(store, cache, model_dir, active_profile,
+        frames = _taste.suggest_frames(store, cache, model_dir, _profile(),
                                        count=count, seed=seed)
-        return {"count": len(frames), "base": active_profile, "frames": frames}
+        return {"count": len(frames), "base": _profile(), "frames": frames}
 
     @app.post("/api/taste/like")
     def taste_like(body: TasteLikeBody):
         from .. import taste as _taste
-        profile = _taste.like_frame(store, body.key, body.time, body.path,
-                                    active_profile, body.category, body.label)
+        prof = _taste.like_frame(store, body.key, body.time, body.path,
+                                 _profile(), body.category, body.label)
         store.save()
-        pos, _ = store.counts(profile)
-        return {"ok": True, "profile": profile, "count": pos}
+        pos, _ = store.counts(prof)
+        return {"ok": True, "profile": prof, "count": pos}
 
     @app.post("/api/taste/unlike")
     def taste_unlike(body: TasteLikeBody):
         from .. import taste as _taste
         dropped = _taste.unlike_frame(store, body.key, body.time,
-                                      active_profile, body.category)
+                                      _profile(), body.category)
         if dropped:
             store.save()
         return {"ok": True, "dropped": dropped}
@@ -752,7 +803,7 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
     @app.get("/api/taste/summary")
     def taste_summary():
         from .. import taste as _taste
-        return _taste.taste_summary(store, active_profile)
+        return _taste.taste_summary(store, _profile())
 
     return app
 
