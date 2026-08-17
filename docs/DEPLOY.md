@@ -122,12 +122,21 @@ with the *exact same transform the embedder used* — plus a status badge:
 - **not embedded** (grey) — discovered but not yet processed.
 
 Read the thumbnails: each should look like a **normal forward-facing view**. If
-one is **fisheye, split down the middle, or stretched**, that file's format
-wasn't detected correctly — the embeddings for it are meaningless. Fix its
-filename hint (or the **assume** format on the Embed tab) and re-embed it. Use the
-filter chips (All / Embedded / Failed / Not embedded) to narrow the grid, and
-click any thumbnail to enlarge it. Thumbnails load lazily as you scroll, so a
-large library doesn't render every frame at once.
+one is **fisheye, split down the middle (two frames), or stretched**, that file's
+format was detected wrong — the embeddings for it are meaningless. Use the filter
+chips (All / Embedded / Failed / Not embedded) to narrow the grid, and click any
+thumbnail to enlarge it. Thumbnails load lazily as you scroll, so a large library
+doesn't render every frame at once.
+
+**Fix a wrong de-warp (⟳ fix).** Every card has a **⟳ fix** button. It opens a
+panel where you force the correct **methodology** for that one file — flip
+SBS↔TB, switch equirect↔fisheye (MKX200/220, Fisheye190), nudge FOV/pitch, or
+choose **Flat (no de-warp)** for already-flat content. **Preview** renders one
+de-warped eye so you can confirm it before committing; **Re-embed this file** then
+drops the old vector and re-embeds just that file with the chosen format. The
+correction is **sticky** — saved per file (a green **override** badge marks it)
+and reused by every future embed, even after a cache clear, so you never have to
+re-fix the same file. Picking **Auto (re-detect)** clears the override.
 
 ### ③ Flag moments (needs HereSphere playback)
 

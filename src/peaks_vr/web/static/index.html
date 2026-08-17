@@ -89,6 +89,14 @@
     align-items:center;justify-content:center;cursor:zoom-out;z-index:50;padding:24px}
   #qcLightbox img{max-width:100%;max-height:100%;object-fit:contain;border-radius:8px}
   #qcLightbox.on{display:flex}
+  .badge.ov{color:var(--accent);border:1px solid var(--accent)}
+  .fixbtn{font-size:10px;padding:2px 7px;border-radius:20px;cursor:pointer}
+  #qcFix{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;
+    align-items:center;justify-content:center;z-index:60;padding:18px}
+  #qcFix.on{display:flex}
+  #qcFix .box{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:16px;width:100%;max-width:520px;max-height:92vh;overflow:auto}
+  #qcFix .imgwrap{aspect-ratio:1/1;max-height:46vh}
 </style>
 </head>
 <body>
@@ -233,6 +241,40 @@
 
 <div id="qcLightbox"><img alt="frame"></div>
 
+<div id="qcFix">
+  <div class="box">
+    <h2 style="text-transform:uppercase;letter-spacing:.6px;color:var(--dim);font-size:13px;margin:0 0 4px">Fix de-warp &amp; re-embed</h2>
+    <div class="qcname" id="fixName" style="margin-bottom:6px">—</div>
+    <div class="imgwrap"><div class="ph" id="fixPh">preview the chosen format</div><img id="fixImg" class="hide"></div>
+    <div class="mut" id="fixMsg" style="margin-top:6px">Pick the correct format, Preview, then Re-embed. The correction is remembered for this file.</div>
+    <label class="f">Methodology (format)</label>
+    <select id="fixFormat">
+      <option value="auto">Auto (re-detect — clears override)</option>
+      <option value="180_sbs">180° SBS (equirect)</option>
+      <option value="180_tb">180° TB (equirect)</option>
+      <option value="mkx200_sbs">Fisheye 200° SBS (MKX200)</option>
+      <option value="mkx200_tb">Fisheye 200° TB</option>
+      <option value="mkx220_sbs">Fisheye 220° SBS (MKX220)</option>
+      <option value="mkx220_tb">Fisheye 220° TB</option>
+      <option value="fisheye190_sbs">Fisheye 190° SBS</option>
+      <option value="fisheye190_tb">Fisheye 190° TB</option>
+      <option value="fisheye_sbs">Fisheye 180° SBS</option>
+      <option value="flat">Flat — no de-warp (already flat / 2D)</option>
+    </select>
+    <div class="row row3" style="margin-top:8px">
+      <div><label class="f">FOV</label><input id="fixFov" type="number" value="100" min="60" max="140"></div>
+      <div><label class="f">Pitch</label><input id="fixPitch" type="number" value="0" min="-60" max="60"></div>
+      <div><label class="f">Frame @</label><input id="fixFrac" type="number" value="0.5" min="0" max="1" step="0.05"></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="fixPreview" style="flex:1">Preview</button>
+      <button class="primary" id="fixGo" style="flex:1">Re-embed this file</button>
+      <button id="fixClose" style="flex:0 0 auto">Close</button>
+    </div>
+    <div class="mut" id="fixStatus" style="margin-top:8px"></div>
+  </div>
+</div>
+
 <script>
 const $ = s => document.querySelector(s);
 
@@ -335,11 +377,12 @@ $('#failClear').onclick = async () => { await fetch('/api/failures/clear',{metho
 // ================= QC =================
 let qcFilter='all';
 function qcAssume(){ return $('#assume') ? $('#assume').value : ''; }
-function qcThumb(path, frac){
+function qcThumb(path, frac, bust){
   const a = encodeURIComponent(qcAssume());
   const img = document.createElement('img');
   img.loading='lazy'; img.decoding='async';
-  img.src=`/api/preview?path=${encodeURIComponent(path)}&frac=${frac}&assume=${a}`;
+  const b = bust? `&_=${bust}` : '';
+  img.src=`/api/preview?path=${encodeURIComponent(path)}&frac=${frac}&assume=${a}${b}`;
   img.onerror=()=>{ img.classList.add('broken'); img.removeAttribute('src'); img.alt='no frame'; };
   img.onclick=()=>{ if(img.classList.contains('broken')||!img.currentSrc) return;
     $('#qcLightbox img').src=img.currentSrc; $('#qcLightbox').classList.add('on'); };
@@ -360,15 +403,21 @@ async function loadQc(){
   data.files.forEach(f=>{
     const st = f.failed?'fail':(f.embedded?'ok':'none'); if(st==='ok')ok++; else if(st==='fail')fail++; else none++;
     const card=document.createElement('div'); card.className='qccard'; card.dataset.st=st;
+    card.dataset.path=f.path; card.dataset.name=f.name;
+    if(f.override) card.dataset.override=JSON.stringify(f.override);
     const thumbs=document.createElement('div'); thumbs.className='qcthumbs';
     thumbs.appendChild(qcThumb(f.path,0.35)); thumbs.appendChild(qcThumb(f.path,0.65));
     const meta=document.createElement('div'); meta.className='qcmeta';
     const name=document.createElement('div'); name.className='qcname'; name.textContent=f.name;
+    const right=document.createElement('div'); right.style.cssText='display:flex;gap:5px;align-items:center;flex:0 0 auto';
     const badge=document.createElement('span');
-    badge.className='badge '+st;
-    badge.textContent = st==='ok'?'embedded':(st==='fail'?'failed':'not embedded');
-    if(st==='fail') badge.title=f.error||'failed';
-    meta.appendChild(name); meta.appendChild(badge);
+    badge.className='badge '+(f.override?'ov':st);
+    badge.textContent = f.override?'override':(st==='ok'?'embedded':(st==='fail'?'failed':'not embedded'));
+    badge.title = f.override?('forced: '+(f.override.flat?'flat':f.override.format)) : (st==='fail'?(f.error||'failed'):'');
+    const fix=document.createElement('button'); fix.className='fixbtn'; fix.textContent='⟳ fix';
+    fix.onclick=()=>openFix(card);
+    right.appendChild(badge); right.appendChild(fix);
+    meta.appendChild(name); meta.appendChild(right);
     card.appendChild(thumbs); card.appendChild(meta); grid.appendChild(card);
   });
   $('#qcSummary').innerHTML = `<b>${data.count}</b> videos · `
@@ -383,6 +432,72 @@ document.querySelectorAll('#qcChips .chip').forEach(ch=>ch.onclick=()=>{
 });
 $('#qcReload').onclick=()=>{ qcLoaded=false; loadQc(); };
 $('#qcLightbox').onclick=()=>$('#qcLightbox').classList.remove('on');
+
+// ---- QC fix modal ----
+let fixCard=null, fixTimer=null;
+function openFix(card){
+  fixCard=card;
+  $('#fixName').textContent=card.dataset.name;
+  const ov = card.dataset.override? JSON.parse(card.dataset.override):null;
+  $('#fixFormat').value = ov? (ov.flat?'flat':(ov.format||'auto')) : 'auto';
+  $('#fixFov').value = ov? ov.fov : 100;
+  $('#fixPitch').value = ov? ov.pitch : 0;
+  $('#fixImg').classList.add('hide'); $('#fixPh').classList.remove('hide');
+  $('#fixStatus').textContent=''; $('#fixMsg').textContent='Pick the correct format, Preview, then Re-embed. The correction is remembered for this file.';
+  $('#qcFix').classList.add('on');
+}
+function fixQuery(){
+  const f=$('#fixFormat').value, fov=$('#fixFov').value, pitch=$('#fixPitch').value, frac=$('#fixFrac').value;
+  const p=encodeURIComponent(fixCard.dataset.path);
+  if(f==='flat') return `path=${p}&flat=true&frac=${frac}`;
+  if(f==='auto') return `path=${p}&frac=${frac}`;               // preview auto-detect
+  return `path=${p}&format=${encodeURIComponent(f)}&fov=${fov}&pitch=${pitch}&frac=${frac}`;
+}
+$('#fixPreview').onclick=async()=>{
+  $('#fixMsg').textContent='rendering…'; $('#fixPreview').disabled=true;
+  try{
+    const r=await fetch('/api/preview?'+fixQuery());
+    if(r.ok){ const b=await r.blob(); $('#fixImg').src=URL.createObjectURL(b);
+      $('#fixImg').classList.remove('hide'); $('#fixPh').classList.add('hide');
+      $('#fixMsg').innerHTML='✓ One forward-facing eye = correct. Still split/fisheye/stretched? Try another format.'; }
+    else { const e=await r.json().catch(()=>({detail:r.statusText})); $('#fixMsg').textContent='✗ '+(e.detail||'preview failed'); }
+  }catch(e){ $('#fixMsg').textContent='✗ '+e; }
+  $('#fixPreview').disabled=false;
+};
+$('#fixGo').onclick=async()=>{
+  const f=$('#fixFormat').value;
+  const body={path:fixCard.dataset.path, format:f, fov:parseFloat($('#fixFov').value),
+    pitch:parseFloat($('#fixPitch').value), flat:f==='flat'};
+  $('#fixStatus').textContent='starting re-embed…'; $('#fixGo').disabled=true;
+  const r=await fetch('/api/embed/reembed',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok){ const e=await r.json().catch(()=>({detail:r.statusText})); $('#fixStatus').textContent='✗ '+(e.detail||'could not start'); $('#fixGo').disabled=false; return; }
+  pollReembed();
+};
+async function pollReembed(){
+  const s=await (await fetch('/api/embed/status')).json();
+  const j=s.job||{};
+  $('#fixStatus').textContent=`${j.status||'…'} · ${(j.log||[]).slice(-1)[0]||''}`;
+  if(s.running){ fixTimer=setTimeout(pollReembed,700); return; }
+  clearTimeout(fixTimer);
+  const ok=(j.stats&&j.stats.embedded)>0, failed=(j.stats&&j.stats.failed)>0;
+  $('#fixStatus').textContent = ok?'✓ re-embedded — correction saved':(failed?('✗ failed: '+(j.error||(j.log||[]).slice(-1)[0]||'')):'done');
+  if(ok && fixCard){ refreshCard(fixCard); setTimeout(()=>$('#qcFix').classList.remove('on'), 700); }
+  refreshStats();
+}
+function refreshCard(card){
+  const bust=Date.now(), path=card.dataset.path;
+  const thumbs=card.querySelector('.qcthumbs'); thumbs.innerHTML='';
+  thumbs.appendChild(qcThumb(path,0.35,bust)); thumbs.appendChild(qcThumb(path,0.65,bust));
+  const f=$('#fixFormat').value;
+  if(f==='auto'){ delete card.dataset.override; } else {
+    card.dataset.override=JSON.stringify({format:f==='flat'?'':f, flat:f==='flat', fov:parseFloat($('#fixFov').value), pitch:parseFloat($('#fixPitch').value)});
+  }
+  card.dataset.st='ok';
+  const badge=card.querySelector('.badge');
+  if(card.dataset.override){ badge.className='badge ov'; badge.textContent='override'; badge.title='forced: '+(f==='flat'?'flat':f); }
+  else { badge.className='badge ok'; badge.textContent='embedded'; badge.title=''; }
+}
+$('#fixClose').onclick=()=>{ clearTimeout(fixTimer); $('#qcFix').classList.remove('on'); };
 
 // ================= FLAG =================
 let state={path:null,current_time:0,playing:false,connected:false}, inT=null, outT=null;

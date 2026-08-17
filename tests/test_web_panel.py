@@ -28,6 +28,15 @@ def _panel(tmp_path, with_media=True):
     return TestClient(app), media
 
 
+def _wait_idle(client, timeout=5.0):
+    """Block until the background job runner is idle (or timeout)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not client.get("/api/embed/status").json()["running"]:
+            return
+        time.sleep(0.03)
+
+
 def test_config_and_library(tmp_path):
     client, media = _panel(tmp_path)
     cfg = client.get("/api/config").json()
@@ -146,6 +155,68 @@ def test_preview_frac_seeks_to_fraction_of_duration(tmp_path, monkeypatch):
     r = client.get("/api/preview", params={"path": "a_180_sbs.mp4", "frac": 0.5})
     assert r.status_code == 200
     assert seen["t"] == 100.0  # 0.5 * 200
+
+
+def test_reembed_stores_override_invalidates_and_runs(tmp_path):
+    """QC re-embed: stores the sticky format override, drops the old cache entry,
+    and runs a single-file job. `format=auto` clears the override."""
+    from peaks_vr.cache import EmbeddingCache, path_key
+    from peaks_vr.overrides import overrides_for
+
+    client, media = _panel(tmp_path)
+    cache_root = tmp_path / "cache"
+    p = str(media / "a_180_sbs.mp4")
+    key = path_key(p)
+    EmbeddingCache(cache_root).save(key, "fake", np.zeros((1, 4), np.float16), [0.0])
+    assert EmbeddingCache(cache_root).has(key, "fake")
+
+    r = client.post("/api/embed/reembed",
+                    json={"path": p, "format": "180_tb", "fov": 100, "pitch": -10})
+    assert r.status_code == 200
+    _wait_idle(client)
+    ov = overrides_for(str(cache_root)).get(p)
+    assert ov and ov["format"] == "180_tb" and ov["pitch"] == -10.0
+    # the pre-existing vector was invalidated (deleted) before the re-embed
+    assert not EmbeddingCache(cache_root).has(key, "fake")
+
+    # format=auto clears the override
+    r = client.post("/api/embed/reembed", json={"path": p, "format": "auto"})
+    assert r.status_code == 200
+    _wait_idle(client)
+    assert overrides_for(str(cache_root)).get(p) is None
+
+
+def test_reembed_rejects_unknown_format(tmp_path):
+    client, media = _panel(tmp_path)
+    r = client.post("/api/embed/reembed",
+                    json={"path": str(media / "a_180_sbs.mp4"), "format": "bogus"})
+    assert r.status_code == 422
+
+
+def test_preview_uses_stored_override(tmp_path, monkeypatch):
+    """A stored override drives /api/preview even with no explicit format param,
+    so QC thumbnails reflect the correction. Assert the forced layout reaches the
+    reprojector."""
+    from PIL import Image
+
+    from peaks_vr.overrides import overrides_for
+    from peaks_vr.sampling import FrameSampler
+
+    client, media = _panel(tmp_path)
+    # a_180_sbs.mp4's filename says SBS; force TB via an override
+    overrides_for(str(tmp_path / "cache")).set(str(media / "a_180_sbs.mp4"),
+                                               format="180_tb")
+    seen = {}
+    def fake_grab(self, path, t):
+        seen["layout"] = self.reproject.fmt.layout.value if self.reproject else "flat"
+        return Image.new("RGB", (8, 8))
+    monkeypatch.setattr(FrameSampler, "grab_frame", fake_grab)
+
+    # the UI passes the absolute path from /api/qc — the same key overrides use
+    r = client.get("/api/preview",
+                   params={"path": str(media / "a_180_sbs.mp4"), "time": 1})
+    assert r.status_code == 200
+    assert seen["layout"] == "tb"  # override won over the SBS filename
 
 
 def test_embed_start_requires_media(tmp_path):

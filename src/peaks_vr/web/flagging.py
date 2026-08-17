@@ -51,9 +51,17 @@ try:
         hwaccel: str = "auto"   # "" | "cuda" | "auto" — NVDEC decode for VR/flat
         assume: str | None = None
         scene_timeout: float | None = None  # per-scene ceiling (s); None = env/default
+
+    class ReembedBody(BaseModel):
+        path: str
+        format: str = "auto"    # "auto" = re-detect (clear override) | a token | "flat"
+        fov: float = 100.0
+        pitch: float = 0.0
+        flat: bool = False
 except ImportError:  # pragma: no cover - only when fastapi/pydantic absent
     MarkBody = None  # type: ignore
     EmbedBody = None  # type: ignore
+    ReembedBody = None  # type: ignore
 
 
 # --- the playback mirror ----------------------------------------------------
@@ -184,13 +192,42 @@ class MarkResult:
 _CANONICAL_MODEL = {"fake": "fake", "dino": "dinov2", "clip": "clip"}
 
 
-def _reprojector_for(path: str, *, assume: str | None = None, sampler=None):
-    """Build a VR de-warp for a file. Filename hints win; otherwise the frame's
-    aspect ratio (probed via ``sampler``) sets the stereo layout and ``assume``
-    fills in the rest — so unhinted files still de-warp. Returns (Reprojector or
-    None, VRFormat)."""
+def _forced_reprojector(token: str, *, fov: float = 100.0, pitch: float = 0.0,
+                        flat: bool = False):
+    """Build a de-warp from an *authoritative* format token — a QC correction, not
+    a guess. ``flat`` means embed the raw centre crop (no de-warp). Returns
+    (Reprojector or None, VRFormat); the reprojector is None for flat or an
+    unparseable token."""
+    from ..reprojection import Reprojector
+    from ..vr_format import (Projection, StereoLayout, VRFormat,
+                             detect_from_filename)
+
+    if flat:
+        return None, VRFormat(Projection.UNKNOWN, StereoLayout.MONO, None,
+                              source="override:flat")
+    fmt = detect_from_filename(token)
+    if not fmt.is_known:
+        return None, fmt
+    return Reprojector.for_format(fmt, viewport_fov_deg=fov, pitch=pitch), fmt
+
+
+def _reprojector_for(path: str, *, assume: str | None = None, sampler=None,
+                     override: dict | None = None):
+    """Build a VR de-warp for a file. A stored QC ``override`` wins outright;
+    otherwise filename hints win, then the frame's aspect ratio (probed via
+    ``sampler``) sets the stereo layout and ``assume`` fills the rest — so
+    unhinted files still de-warp. Returns (Reprojector or None, VRFormat)."""
     from ..reprojection import Reprojector
     from ..vr_format import detect
+
+    if override is not None:
+        rep, fmt = _forced_reprojector(override.get("format", ""),
+                                       fov=override.get("fov", 100.0),
+                                       pitch=override.get("pitch", 0.0),
+                                       flat=override.get("flat", False))
+        if rep is not None or override.get("flat"):
+            return rep, fmt
+        # an unparseable stored token falls through to normal detection
 
     aspect = None
     if sampler is not None:
@@ -210,19 +247,26 @@ def failure_log_for(cache_root: str):
 def embed_job(job, mgr, *, media_root: str, cache_root: str, model: str,
               interval: float, vr: bool, hwaccel: str,
               assume: str | None = None, paths: list[str] | None = None,
-              scene_timeout: float | None = None) -> None:
+              scene_timeout: float | None = None, invalidate: bool = False) -> None:
     """Background task: embed videos (resumable). Scans ``media_root`` unless an
-    explicit ``paths`` list is given (used for retrying just the failures).
-    Each casualty is recorded in the failure log; a later success clears it.
+    explicit ``paths`` list is given (used for retrying just the failures, or a
+    single-file QC re-embed). Each casualty is recorded in the failure log; a
+    later success clears it.
+
+    A stored QC :mod:`~peaks_vr.overrides` correction for a file wins over
+    auto-detection (so fixes stick across runs). ``invalidate`` deletes each
+    path's cache entry first, forcing a genuine re-embed instead of the resumable
+    skip — set by the QC re-embed after the format is changed.
 
     ``scene_timeout`` is the per-scene sampling ceiling in seconds (0 disables).
     When None it comes from ``PEAKS_SCENE_TIMEOUT``, falling back to the
     :class:`FrameSampler` default — heavy 8K scenes need well over the old 180s."""
     import os
 
-    from ..cache import EmbeddingCache
+    from ..cache import EmbeddingCache, path_key
     from ..cli import iter_video_files, scene_from_path
     from ..embedding import get_embedder
+    from ..overrides import overrides_for
     from ..pipeline import embed_library
     from ..sampling import FrameSampler
 
@@ -241,19 +285,29 @@ def embed_job(job, mgr, *, media_root: str, cache_root: str, model: str,
     embedder = get_embedder(model)
     cache = EmbeddingCache(cache_root)
     failures = failure_log_for(cache_root)
+    overrides = overrides_for(cache_root)
     hw = "" if hwaccel in ("none", "cpu") else hwaccel
     for path in videos:
         if mgr.should_stop():
             job.log("stop requested — halting")
             break
         job.set_current(Path(path).name)
+        if invalidate:  # drop the old vector so this isn't skipped as resumable
+            cache.delete(path_key(path), embedder.name)
+        ov = overrides.get(path)
         reproject = None
-        if vr:
+        if vr and ov and ov.get("flat"):
+            job.log(f"  {job.current}: flat (de-warp off) per QC override")
+        elif vr:
             probe = FrameSampler(hwaccel=hw)  # for probe_dimensions only
-            reproject, fmt = _reprojector_for(path, assume=assume, sampler=probe)
+            reproject, fmt = _reprojector_for(path, assume=assume, sampler=probe,
+                                              override=ov)
             if reproject is None:
                 job.log(f"! {job.current}: VR format unknown (no hint, no assume) "
                         f"— skipping de-warp")
+            elif ov:
+                job.log(f"  {job.current}: format override → "
+                        f"{fmt.projection.value}/{fmt.layout.value}/{fmt.fov_deg}")
         sampler = FrameSampler(interval_seconds=interval, mode="sparse",
                                hwaccel=hw, reproject=reproject,
                                scene_timeout=scene_timeout)
@@ -389,6 +443,7 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
         hit under this model (same key the embedder writes: ``path_key``)."""
         from ..cache import EmbeddingCache
         from ..cli import iter_video_files
+        from ..overrides import overrides_for
         if not media_root:
             return {"count": 0, "files": []}
         files = iter_video_files([media_root])
@@ -398,17 +453,21 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
             embedded = set()
         fails = {e.get("path"): e.get("error", "")
                  for e in failure_log_for(cache_root).entries() if e.get("path")}
+        ovs = overrides_for(cache_root).all()
         out = []
         for f in files[:limit]:
             out.append({"name": Path(f).name, "path": f,
                         "embedded": path_key(f) in embedded,
-                        "failed": f in fails, "error": fails.get(f, "")})
+                        "failed": f in fails, "error": fails.get(f, ""),
+                        "override": ovs.get(f)})
         return {"count": len(files), "files": out}
 
     @app.get("/api/preview")
     def preview(path: str, time: float = 60.0, frac: float | None = None,
                 fov: float = 100.0, pitch: float = 0.0, yaw: float = 0.0,
-                hwaccel: str = "none", assume: str | None = None):
+                hwaccel: str = "none", assume: str | None = None,
+                format: str | None = None, flat: bool = False):
+        from ..overrides import overrides_for
         from ..reprojection import Reprojector
         from ..sampling import FrameSampler
         from ..vr_format import detect
@@ -416,13 +475,33 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
         real = _safe_under_media(path)
         hw = "" if hwaccel == "none" else hwaccel
         probe = FrameSampler(hwaccel=hw)
-        dims = probe.probe_dimensions(real)
-        aspect = (dims[0] / dims[1]) if dims else None
-        fmt = detect(Path(real).name, aspect_ratio=aspect,
-                     assume=assume if assume is not None else assume_default)
-        if not fmt.is_known:
-            raise HTTPException(422, f"VR format not recognized for "
-                                f"{Path(real).name} — set an 'assume' format")
+
+        # De-warp precedence: an explicit `format`/`flat` param (previewing a QC
+        # candidate) > a stored override for this file > auto-detection. So QC
+        # thumbnails (which pass neither) reflect saved corrections, and the fix
+        # modal can preview a candidate before it's committed.
+        rep = None
+        if format is not None or flat:
+            rep, fmt = _forced_reprojector(format or "", fov=fov, pitch=pitch,
+                                           flat=flat)
+            if rep is None and not flat:
+                raise HTTPException(422, f"format {format!r} not recognized")
+        else:
+            ov = overrides_for(cache_root).get(path)
+            if ov is not None:
+                rep, fmt = _reprojector_for(real, sampler=probe, override=ov)
+                flat = bool(ov.get("flat"))
+            else:
+                dims = probe.probe_dimensions(real)
+                aspect = (dims[0] / dims[1]) if dims else None
+                fmt = detect(Path(real).name, aspect_ratio=aspect,
+                             assume=assume if assume is not None else assume_default)
+                if not fmt.is_known:
+                    raise HTTPException(422, f"VR format not recognized for "
+                                        f"{Path(real).name} — set an 'assume' format")
+                rep = Reprojector.for_format(fmt, viewport_fov_deg=fov,
+                                             pitch=pitch, yaw=yaw)
+
         # A fraction of the file's duration lands a QC thumbnail mid-file
         # regardless of clip length (a fixed time can overrun a short clip).
         if frac is not None:
@@ -430,18 +509,17 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
                 time = max(0.0, min(float(frac), 0.999)) * probe.probe_duration(real)
             except Exception:
                 pass  # unknown duration — fall back to the absolute `time`
-        rep = Reprojector.for_format(fmt, viewport_fov_deg=fov, pitch=pitch, yaw=yaw)
-        s = FrameSampler(hwaccel=hw, reproject=rep)
+        s = FrameSampler(hwaccel=hw, reproject=rep)  # rep None → raw (flat) crop
         try:
             img = s.grab_frame(real, time)
         except Exception as exc:
             raise HTTPException(503, f"could not render preview: {exc}")
         from io import BytesIO
         buf = BytesIO(); img.save(buf, format="JPEG", quality=90)
+        tag = "flat/mono/—" if rep is None else (
+            f"{fmt.projection.value}/{fmt.layout.value}/{fmt.fov_deg}")
         return Response(content=buf.getvalue(), media_type="image/jpeg",
-                        headers={"X-VR-Format":
-                                 f"{fmt.projection.value}/{fmt.layout.value}/"
-                                 f"{fmt.fov_deg} ({fmt.source})"})
+                        headers={"X-VR-Format": f"{tag} ({fmt.source})"})
 
     @app.post("/api/embed/start")
     def embed_start(body: EmbedBody):
@@ -456,6 +534,39 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
         except RuntimeError as exc:
             raise HTTPException(409, str(exc))
         return {"started": True}
+
+    @app.post("/api/embed/reembed")
+    def embed_reembed(body: ReembedBody):
+        """Re-embed one file with a corrected (or reset) de-warp. Stores the
+        sticky override (or clears it for ``format == "auto"``), then runs a
+        single-file embed with ``invalidate`` so the old vector is dropped and the
+        file is genuinely re-processed."""
+        if not media_root:
+            raise HTTPException(400, "no media directory configured (mount /data)")
+        from ..overrides import overrides_for
+        real = _safe_under_media(body.path)  # validate it's inside the library
+        ov = overrides_for(cache_root)
+        flat = body.flat or body.format == "flat"
+        if body.format == "auto" and not flat:
+            ov.remove(body.path)
+            note = "auto (re-detect)"
+        else:
+            if not flat:
+                rep, _ = _forced_reprojector(body.format, fov=body.fov,
+                                             pitch=body.pitch)
+                if rep is None:
+                    raise HTTPException(422, f"format {body.format!r} not recognized")
+            ov.set(body.path, format="" if flat else body.format,
+                   fov=body.fov, pitch=body.pitch, flat=flat)
+            note = "flat (no de-warp)" if flat else body.format
+        try:
+            jobs.start("reembed", lambda job, mgr: embed_job(
+                job, mgr, media_root=media_root, cache_root=cache_root,
+                model=model, interval=8.0, vr=not flat, hwaccel="auto",
+                assume=assume_default, paths=[body.path], invalidate=True))
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc))
+        return {"started": True, "format": note}
 
     @app.post("/api/embed/stop")
     def embed_stop():
