@@ -102,6 +102,17 @@ Levers: raise the **Interval** (fewer samples) or use a lighter `PEAKS_VR_MODEL`
 The Embed tab shows the current file's elapsed seconds so you can watch it
 progress.
 
+**RAM watchdog (cap 24 GB).** Embedding 8K is memory-hungry — decode buffers, a
+whole scene's frames on the GPU, the torch allocator, and allocator fragmentation
+across a long run. peaks-vr watches its own resident memory and **self-regulates**
+to stay under a cap (default **24 GB**, set `PEAKS_VR_MAX_RAM_GB`): as usage rises
+it reclaims memory (GC + CUDA cache + return arenas to the OS), and if it reaches
+the cap it **stops the run cleanly** — before the kernel OOM-killer can crash the
+container — logging why. Since embedding is resumable, you lose nothing: free
+headroom (raise the cap, raise the **Interval**, or use a lighter model) and start
+again. The Embed tab shows live `RAM x.x / 24 GB`. Set `PEAKS_VR_MAX_RAM_GB=0` to
+disable.
+
 **Per-scene timeout.** Each scene has a ceiling (default **900 s** = 15 min);
 past it the scene is marked failed and the run moves on, so one pathological file
 can't wedge the batch. Genuinely heavy 8K scenes can take a few minutes, so the
@@ -169,6 +180,7 @@ once scenes are embedded.)
 | `PEAKS_VR_REMOTE_PORT` | `23554` | DeoVR remote port |
 | `PEAKS_VR_PREVIEW` | _(off)_ | `1` = live de-warped preview (needs ffmpeg + an embedded scene) |
 | `PEAKS_SCENE_TIMEOUT` | `900` | per-scene sampling ceiling in seconds (`0` = off); fallback for CLI embeds — the Embed tab's field overrides it per run |
+| `PEAKS_VR_MAX_RAM_GB` | `24` | RAM watchdog cap in GB (`0` = disable). Under pressure it reclaims memory; at the cap it stops the run cleanly (resumable) before an OOM kill |
 
 ## Path mapping note
 

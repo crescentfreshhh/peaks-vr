@@ -119,6 +119,7 @@
         <div><div class="big" id="libCount">–</div><div class="mut">videos found</div></div>
       </div>
       <div class="note" id="mediaNote">…</div>
+      <div class="note" id="memNote"></div>
     </div>
 
     <div class="card">
@@ -315,6 +316,15 @@ async function refreshStats(){
   const s = await (await fetch('/api/stats')).json();
   $('#embCount').textContent = s.embedded;
 }
+function showMem(m){
+  if(!m || !m.enabled){ $('#memNote').textContent=''; return; }
+  const col = m.tripped?'var(--love)':(m.pct>=80?'var(--accent)':'var(--dim)');
+  const tag = m.tripped?' — <b style="color:var(--love)">capped (run halted to stay under limit)</b>'
+    : (m.pct>=80?' — high, reclaiming':'');
+  $('#memNote').innerHTML=`<span style="color:${col}">RAM ${m.current_gb} / ${m.limit_gb} GB</span>`
+    + ` · peak ${m.peak_gb}${tag}`;
+}
+async function pollMem(){ try{ showMem(await (await fetch('/api/mem')).json()); }catch(e){} }
 $('#pvGo').onclick = async () => {
   const path=$('#pvFile').value, time=$('#pvTime').value, fov=$('#pvFov').value, pitch=$('#pvPitch').value, assume=$('#assume').value;
   $('#pvMsg').textContent='rendering…'; $('#pvGo').disabled=true;
@@ -343,6 +353,7 @@ let embTimer=null;
 async function pollEmbed(){
   const s=await (await fetch('/api/embed/status')).json();
   $('#embCount').textContent = s.embedded;
+  showMem(s.mem);
   const j=s.job;
   if(j){
     const pct = j.total? Math.round(100*j.done/j.total):0;
@@ -537,6 +548,7 @@ async function loadMarks(){
 
 // ---------- boot ----------
 loadConfig(); loadLibrary(); refreshStats(); pollEmbed(); loadFailures();
+pollMem(); setInterval(pollMem, 3000);
 pollFlag(); setInterval(pollFlag, 700); loadMarks();
 </script>
 </body>

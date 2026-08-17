@@ -247,7 +247,8 @@ def failure_log_for(cache_root: str):
 def embed_job(job, mgr, *, media_root: str, cache_root: str, model: str,
               interval: float, vr: bool, hwaccel: str,
               assume: str | None = None, paths: list[str] | None = None,
-              scene_timeout: float | None = None, invalidate: bool = False) -> None:
+              scene_timeout: float | None = None, invalidate: bool = False,
+              watchdog=None) -> None:
     """Background task: embed videos (resumable). Scans ``media_root`` unless an
     explicit ``paths`` list is given (used for retrying just the failures, or a
     single-file QC re-embed). Each casualty is recorded in the failure log; a
@@ -291,6 +292,11 @@ def embed_job(job, mgr, *, media_root: str, cache_root: str, model: str,
         if mgr.should_stop():
             job.log("stop requested — halting")
             break
+        # RAM backpressure: never start a scene while at the memory cap. A hard
+        # breach halts the run cleanly (resumable) instead of risking an OOM kill.
+        if watchdog is not None and not watchdog.gate(job.log, mgr.should_stop):
+            job.log("halted by RAM watchdog — resume after freeing headroom")
+            break
         job.set_current(Path(path).name)
         if invalidate:  # drop the old vector so this isn't skipped as resumable
             cache.delete(path_key(path), embedder.name)
@@ -331,10 +337,26 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
 
     from .jobs import JobManager
 
+    from ..memwatch import MemoryWatchdog, limit_from_env
+
     app = FastAPI(title="peaks-vr")
     active_profile = profile
     jobs = jobs or JobManager()
     model_dir = _CANONICAL_MODEL.get(model, model)
+
+    # Self-regulating RAM watchdog (default cap 24 GB, PEAKS_VR_MAX_RAM_GB). A
+    # hard breach stops the running job cleanly (resumable) before the kernel
+    # OOM-killer can crash the container mid-embed. Its log lines land in the
+    # active job's log (visible in the UI) and on stderr (docker logs).
+    def _wlog(msg: str) -> None:
+        import sys
+        print(f"[peaks-vr][mem] {msg}", file=sys.stderr)
+        j = jobs.current_job
+        if j is not None and jobs.running:
+            j.log(msg)
+
+    watchdog = MemoryWatchdog(limit_from_env(), on_trip=jobs.stop,
+                              log=_wlog).start()
 
     def _state_dict() -> dict:
         connected, st = mirror.snapshot()
@@ -530,7 +552,8 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
                 job, mgr, media_root=media_root, cache_root=cache_root,
                 model=model, interval=body.interval, vr=body.vr,
                 hwaccel=body.hwaccel, scene_timeout=body.scene_timeout,
-                assume=body.assume if body.assume is not None else assume_default))
+                assume=body.assume if body.assume is not None else assume_default,
+                watchdog=watchdog))
         except RuntimeError as exc:
             raise HTTPException(409, str(exc))
         return {"started": True}
@@ -563,7 +586,8 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
             jobs.start("reembed", lambda job, mgr: embed_job(
                 job, mgr, media_root=media_root, cache_root=cache_root,
                 model=model, interval=8.0, vr=not flat, hwaccel="auto",
-                assume=assume_default, paths=[body.path], invalidate=True))
+                assume=assume_default, paths=[body.path], invalidate=True,
+                watchdog=watchdog))
         except RuntimeError as exc:
             raise HTTPException(409, str(exc))
         return {"started": True, "format": note}
@@ -576,7 +600,12 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
     @app.get("/api/embed/status")
     def embed_status():
         snap = jobs.status()
-        return {"job": snap, "embedded": _cache_count(), "running": jobs.running}
+        return {"job": snap, "embedded": _cache_count(), "running": jobs.running,
+                "mem": watchdog.snapshot()}
+
+    @app.get("/api/mem")
+    def mem():
+        return watchdog.snapshot()
 
     @app.get("/api/failures")
     def failures():
@@ -597,7 +626,7 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
             jobs.start("retry", lambda job, mgr: embed_job(
                 job, mgr, media_root=media_root or "", cache_root=cache_root,
                 model=model, interval=8.0, vr=True, hwaccel="auto",
-                assume=assume_default, paths=paths))
+                assume=assume_default, paths=paths, watchdog=watchdog))
         except RuntimeError as exc:
             raise HTTPException(409, str(exc))
         return {"started": True, "count": len(paths)}

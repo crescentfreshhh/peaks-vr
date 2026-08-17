@@ -219,6 +219,41 @@ def test_preview_uses_stored_override(tmp_path, monkeypatch):
     assert seen["layout"] == "tb"  # override won over the SBS filename
 
 
+def test_mem_endpoint_reports_snapshot(tmp_path):
+    client, _ = _panel(tmp_path)
+    m = client.get("/api/mem").json()
+    assert m["enabled"] is True and m["limit_gb"] == 24.0
+    assert m["current_gb"] > 0 and "pct" in m
+    # embed status carries the same snapshot for the live UI readout
+    assert "mem" in client.get("/api/embed/status").json()
+
+
+def test_embed_job_halts_on_ram_watchdog(tmp_path):
+    """A watchdog at the cap makes embed_job stop before processing any scene —
+    the resumable, no-OOM behavior."""
+    from peaks_vr.memwatch import GB, MemoryWatchdog
+    from peaks_vr.web.flagging import embed_job
+
+    media = tmp_path / "m"; media.mkdir()
+    (media / "a_180_sbs.mp4").write_bytes(b"x")
+    (media / "b_180_sbs.mp4").write_bytes(b"x")
+    # reports 100 GB against a 10 GB cap → gate() returns False immediately
+    wd = MemoryWatchdog(10 * GB, read_bytes=lambda: 100 * GB)
+
+    class J:
+        def __init__(self): self.total=self.done=0; self.stats={}; self.current=""; self.logs=[]
+        def log(self, m): self.logs.append(m)
+        def set_current(self, n): self.current=n
+    class M:
+        def should_stop(self): return False
+
+    job = J()
+    embed_job(job, M(), media_root=str(media), cache_root=str(tmp_path / "c"),
+              model="fake", interval=8.0, vr=False, hwaccel="none", watchdog=wd)
+    assert job.done == 0                      # nothing embedded
+    assert any("watchdog" in m.lower() for m in job.logs)
+
+
 def test_embed_start_requires_media(tmp_path):
     client, _ = _panel(tmp_path, with_media=False)
     # media dir exists but is empty → job runs, finds 0 files

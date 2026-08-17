@@ -75,6 +75,12 @@ class JobManager:
     def running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
+    @property
+    def current_job(self) -> "Job | None":
+        """The running (or last-finished) job, for out-of-band loggers like the
+        RAM watchdog to append to."""
+        return self._job
+
     def should_stop(self) -> bool:
         return self._stop.is_set()
 

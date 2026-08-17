@@ -76,11 +76,18 @@ def scene_from_path(path: str) -> Scene:
 
 def cmd_embed(args) -> int:
     from .failures import FailureLog
+    from .memwatch import MemoryWatchdog, limit_from_env
 
     embedder = get_embedder(args.model)
     cache = EmbeddingCache(args.cache)
     failures = FailureLog(Path(args.cache).parent / "failures.json")
     hwaccel = "" if args.hwaccel in ("none", "cpu") else args.hwaccel
+    # Self-regulating RAM cap (default 24 GB, PEAKS_VR_MAX_RAM_GB). Stops the run
+    # cleanly before an OOM kill; embedding is resumable so nothing is lost.
+    watchdog = MemoryWatchdog(
+        limit_from_env(),
+        log=lambda m: print(f"  [mem] {m}", file=sys.stderr),
+    ).start()
     if args.vr:
         from .reprojection import Reprojector
         from .vr_format import detect
@@ -103,6 +110,11 @@ def cmd_embed(args) -> int:
     total = len(videos)
     stats = {"embedded": 0, "skipped": 0, "failed": 0, "frames": 0}
     for path in videos:
+        if not watchdog.gate():
+            print("  ✗ halted by RAM watchdog — resume after freeing headroom "
+                  "(raise PEAKS_VR_MAX_RAM_GB / the interval, or use a lighter "
+                  "model)", file=sys.stderr)
+            break
         # A fresh sampler per file so the VR de-warp can be file-specific
         # (each scene has its own projection). VR uses sparse mode — one
         # seek+de-warp per sample, not a full-file decode.
