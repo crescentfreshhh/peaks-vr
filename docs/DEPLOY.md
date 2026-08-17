@@ -59,7 +59,7 @@ the GPU.)
 
 ## Everything runs from the WebGUI
 
-Open **http://\<server-ip\>:8801**. Three tabs — no console needed.
+Open **http://\<server-ip\>:8801**. Four tabs — no console needed.
 
 ### Password protection (optional)
 
@@ -186,7 +186,27 @@ correction is **sticky** — saved per file (a green **override** badge marks it
 and reused by every future embed, even after a cache clear, so you never have to
 re-fix the same file. Picking **Auto (re-detect)** clears the override.
 
-### ③ Flag moments (needs HereSphere playback)
+### ③ Build your DJ taste (no headset required)
+
+The **DJ taste** tab bootstraps your taste from the already-embedded library, so
+you can build a profile before/without HereSphere. It shows a contact sheet of
+frames sampled across every scene; **👍** the ones that match your taste and each
+becomes a positive example the DJ learns from (stored in `/config/labels.json`,
+same profile the ❤️ flag marks feed).
+
+- **Categories.** Type a **category** (cowgirl, blowjob…) before liking and those
+  👍s are tagged (stored as `dj:cowgirl` etc.). Set a category, thumb-up all the
+  frames that fit, then switch. Matching still spans **all** your likes
+  (nearest-neighbour — every like is its own reference, so distinct acts don't blur
+  together); categories are for organising and, later, balancing a DJ set across
+  acts. Leave the field blank to like without a tag.
+- **Load more** reshuffles a fresh batch (already-liked frames are excluded). Cold
+  start is pure random exploration; once you've liked a dozen-plus, suggestions
+  shift to "more like what you like" plus a few random, so the profile sharpens.
+- Click a thumbnail to enlarge it. The header shows your total likes and the
+  per-category breakdown.
+
+### ④ Flag moments (needs HereSphere playback)
 
 1. Find **this server's LAN IP** (unraid shows it; else `ip addr`/`ipconfig`),
    e.g. `192.168.1.50`.

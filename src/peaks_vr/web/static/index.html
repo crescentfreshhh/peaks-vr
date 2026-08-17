@@ -97,6 +97,12 @@
   #qcFix .box{background:var(--panel);border:1px solid var(--line);border-radius:14px;
     padding:16px;width:100%;max-width:520px;max-height:92vh;overflow:auto}
   #qcFix .imgwrap{aspect-ratio:1/1;max-height:46vh}
+  /* dj taste */
+  .tsthumb{width:100%;aspect-ratio:1/1;object-fit:cover;background:#000;display:block;cursor:zoom-in}
+  .tsthumb.broken{cursor:default;opacity:.5}
+  .tslike{display:block;width:100%;border-radius:0;border:0;border-top:1px solid var(--line);
+    background:var(--panel2);color:var(--dim);font-weight:700;padding:9px;cursor:pointer}
+  .tslike.on{background:var(--love);color:#fff;border-color:var(--love)}
 </style>
 </head>
 <body>
@@ -105,9 +111,10 @@
   <div class="sub">taste-driven moment discovery for VR video</div>
 
   <div class="tabs">
-    <div class="tab on" data-tab="embed" id="tab-embed">① Embed library</div>
-    <div class="tab" data-tab="qc" id="tab-qc">② QC embeds</div>
-    <div class="tab" data-tab="flag" id="tab-flag">③ Flag moments</div>
+    <div class="tab on" data-tab="embed" id="tab-embed">① Embed</div>
+    <div class="tab" data-tab="qc" id="tab-qc">② QC</div>
+    <div class="tab" data-tab="taste" id="tab-taste">③ DJ taste</div>
+    <div class="tab" data-tab="flag" id="tab-flag">④ Flag</div>
   </div>
 
   <!-- ================= EMBED TAB ================= -->
@@ -214,6 +221,28 @@
     </div>
   </section>
 
+  <!-- ================= DJ TASTE TAB ================= -->
+  <section id="pane-taste" class="hide">
+    <div class="card">
+      <h2>Build your DJ taste — thumb-up what you like</h2>
+      <div class="mut">Random frames from across your embedded library. 👍 the ones
+        that match your taste; each becomes a positive example the DJ learns from —
+        no headset needed. Optionally tag a <b>category</b> (cowgirl, blowjob…) so
+        the DJ can balance a set across acts. Set a category, thumb-up all the
+        frames that fit it, then switch. Matching spans <i>all</i> your likes
+        (nearest-neighbour), so categories organise — they don't wall off.</div>
+      <div class="row" style="margin-top:10px">
+        <div style="flex:2"><label class="f">Category for these picks (blank = untagged)</label>
+          <input id="tsCat" list="tsCats" placeholder="e.g. cowgirl" autocomplete="off">
+          <datalist id="tsCats"></datalist></div>
+        <div style="flex:1"><label class="f">&nbsp;</label>
+          <button id="tsMore" class="primary" style="width:100%">↻ Load more</button></div>
+      </div>
+      <div class="mut" id="tsSummary" style="margin-top:10px">…</div>
+    </div>
+    <div class="qcgrid" id="tsGrid"></div>
+  </section>
+
   <!-- ================= FLAG TAB ================= -->
   <section id="pane-flag" class="hide">
     <div class="card">
@@ -314,9 +343,11 @@ document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
   const name = t.dataset.tab;
   $('#pane-embed').classList.toggle('hide', name!=='embed');
   $('#pane-qc').classList.toggle('hide', name!=='qc');
+  $('#pane-taste').classList.toggle('hide', name!=='taste');
   $('#pane-flag').classList.toggle('hide', name!=='flag');
-  document.body.classList.toggle('wide', name==='qc');   // roomier contact sheet
+  document.body.classList.toggle('wide', name==='qc'||name==='taste');  // roomier contact sheet
   if(name==='qc' && !qcLoaded){ loadQc(); }
+  if(name==='taste' && !tasteLoaded){ loadTaste(); tasteSummary(); }
 });
 
 function fmt(t){ if(t==null) return '—'; const m=Math.floor(t/60), s=(t%60); return `${m}:${s.toFixed(1).padStart(4,'0')}`; }
@@ -541,6 +572,56 @@ function refreshCard(card){
   else { badge.className='badge ok'; badge.textContent='embedded'; badge.title=''; }
 }
 $('#fixClose').onclick=()=>{ clearTimeout(fixTimer); $('#qcFix').classList.remove('on'); };
+
+// ================= DJ TASTE =================
+let tasteLoaded=false;
+function tsThumb(f){
+  const a=encodeURIComponent(qcAssume());
+  const img=document.createElement('img'); img.className='tsthumb'; img.loading='lazy'; img.decoding='async';
+  img.src=`/api/preview?path=${encodeURIComponent(f.path)}&time=${f.time}&assume=${a}`;
+  img.onerror=()=>{ img.classList.add('broken'); img.removeAttribute('src'); img.alt='no frame'; };
+  img.onclick=()=>{ if(img.classList.contains('broken')||!img.currentSrc) return;
+    $('#qcLightbox img').src=img.currentSrc; $('#qcLightbox').classList.add('on'); };
+  return img;
+}
+async function loadTaste(){
+  const grid=$('#tsGrid'); grid.innerHTML='<div class="mut" style="padding:12px">loading…</div>';
+  let data;
+  try{ data=await (await fetch('/api/taste/suggest?count=60')).json(); }
+  catch(e){ grid.innerHTML='<div class="mut" style="padding:12px">could not load suggestions</div>'; return; }
+  tasteLoaded=true;
+  grid.innerHTML='';
+  if(!data.frames.length){ grid.innerHTML='<div class="mut" style="padding:12px">No embedded scenes yet — run an embed first (Embed tab).</div>'; return; }
+  data.frames.forEach(f=>{
+    const card=document.createElement('div'); card.className='qccard';
+    card.appendChild(tsThumb(f));
+    const btn=document.createElement('button'); btn.className='tslike'; btn.textContent='👍 like';
+    let liked=false, likedCat=null;
+    btn.onclick=async()=>{
+      const cat=$('#tsCat').value.trim();
+      if(!liked){
+        const r=await fetch('/api/taste/like',{method:'POST',headers:{'content-type':'application/json'},
+          body:JSON.stringify({key:f.key,time:f.time,path:f.path,category:cat})});
+        if(r.ok){ liked=true; likedCat=cat; btn.classList.add('on');
+          btn.textContent='❤ liked'+(cat?` · ${cat}`:''); tasteSummary(); }
+      } else {
+        const r=await fetch('/api/taste/unlike',{method:'POST',headers:{'content-type':'application/json'},
+          body:JSON.stringify({key:f.key,time:f.time,category:likedCat})});
+        if(r.ok){ liked=false; btn.classList.remove('on'); btn.textContent='👍 like'; tasteSummary(); }
+      }
+    };
+    card.appendChild(btn); grid.appendChild(card);
+  });
+}
+async function tasteSummary(){
+  let s; try{ s=await (await fetch('/api/taste/summary')).json(); }catch(e){ return; }
+  const dl=$('#tsCats'); dl.innerHTML='';
+  s.categories.forEach(c=>{ const o=document.createElement('option'); o.value=c.name; dl.appendChild(o); });
+  if(!s.total){ $('#tsSummary').innerHTML=`<b>0</b> likes yet — thumb-up frames to seed <b>${s.base}</b>.`; return; }
+  const parts=s.categories.map(c=>`${c.name} <b>${c.count}</b>`).join(' · ');
+  $('#tsSummary').innerHTML=`<b>${s.total}</b> likes in <b>${s.base}</b>${parts?' — '+parts:''}`;
+}
+$('#tsMore').onclick=()=>{ tasteLoaded=false; loadTaste(); };
 
 // ================= FLAG =================
 let state={path:null,current_time:0,playing:false,connected:false}, inT=null, outT=null;

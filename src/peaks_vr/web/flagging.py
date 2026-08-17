@@ -61,11 +61,19 @@ try:
 
     class LoginBody(BaseModel):
         password: str = ""
+
+    class TasteLikeBody(BaseModel):
+        key: str
+        time: float
+        path: str | None = None
+        category: str | None = None
+        label: int = 1          # 1 = thumbs-up, 0 = thumbs-down
 except ImportError:  # pragma: no cover - only when fastapi/pydantic absent
     MarkBody = None  # type: ignore
     EmbedBody = None  # type: ignore
     ReembedBody = None  # type: ignore
     LoginBody = None  # type: ignore
+    TasteLikeBody = None  # type: ignore
 
 
 # --- the playback mirror ----------------------------------------------------
@@ -708,6 +716,43 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
     @app.post("/api/failures/clear")
     def failures_clear():
         return {"cleared": failure_log_for(cache_root).clear()}
+
+    # --- DJ taste profile: bulk-curate taste from the embedded library -------
+
+    @app.get("/api/taste/suggest")
+    def taste_suggest(count: int = 60, seed: int | None = None):
+        """A batch of frames sampled across all embedded scenes to thumb-up.
+        Cold start = random exploration; warm = active learning. Excludes frames
+        already liked. Render each via /api/preview?path=&time=."""
+        from ..cache import EmbeddingCache
+        from .. import taste as _taste
+        cache = EmbeddingCache(cache_root)
+        frames = _taste.suggest_frames(store, cache, model_dir, active_profile,
+                                       count=count, seed=seed)
+        return {"count": len(frames), "base": active_profile, "frames": frames}
+
+    @app.post("/api/taste/like")
+    def taste_like(body: TasteLikeBody):
+        from .. import taste as _taste
+        profile = _taste.like_frame(store, body.key, body.time, body.path,
+                                    active_profile, body.category, body.label)
+        store.save()
+        pos, _ = store.counts(profile)
+        return {"ok": True, "profile": profile, "count": pos}
+
+    @app.post("/api/taste/unlike")
+    def taste_unlike(body: TasteLikeBody):
+        from .. import taste as _taste
+        dropped = _taste.unlike_frame(store, body.key, body.time,
+                                      active_profile, body.category)
+        if dropped:
+            store.save()
+        return {"ok": True, "dropped": dropped}
+
+    @app.get("/api/taste/summary")
+    def taste_summary():
+        from .. import taste as _taste
+        return _taste.taste_summary(store, active_profile)
 
     return app
 
