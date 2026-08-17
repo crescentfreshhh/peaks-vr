@@ -238,13 +238,13 @@
         frames that fit it, then switch. Matching spans <i>all</i> your likes
         (nearest-neighbour), so categories organise — they don't wall off.</div>
       <div class="row" style="margin-top:10px">
-        <div style="flex:2"><label class="f">Category for these picks (blank = untagged)</label>
-          <input id="tsCat" list="tsCats" placeholder="e.g. cowgirl" autocomplete="off">
-          <datalist id="tsCats"></datalist></div>
+        <div style="flex:2"><label class="f">Category for these picks</label>
+          <select id="tsCatSel"></select></div>
         <div style="flex:1"><label class="f">&nbsp;</label>
           <button id="tsMore" class="primary" style="width:100%">↻ Load more</button></div>
       </div>
       <div class="mut" id="tsSummary" style="margin-top:10px">…</div>
+      <div class="mut" id="tsMode" style="margin-top:6px"></div>
     </div>
     <div class="qcgrid" id="tsGrid"></div>
   </section>
@@ -602,7 +602,29 @@ function refreshCard(card){
 $('#fixClose').onclick=()=>{ clearTimeout(fixTimer); $('#qcFix').classList.remove('on'); };
 
 // ================= DJ TASTE =================
-let tasteLoaded=false;
+let tasteLoaded=false, tsCat='';   // tsCat = the category applied to new likes ('' = untagged)
+const TS_NEW='__new__';
+function fillCatSelect(names){
+  const sel=$('#tsCatSel');
+  const known=Array.from(new Set([...(names||[]), ...(tsCat?[tsCat]:[])]));
+  known.sort();
+  sel.innerHTML='';
+  const add=(v,t)=>{ const o=document.createElement('option'); o.value=v; o.textContent=t; sel.appendChild(o); };
+  add('', 'Untagged (no category)');
+  known.forEach(n=>add(n, n));
+  add(TS_NEW, '＋ New category…');
+  sel.value=tsCat;   // keep the current selection
+}
+function currentCategory(){ return tsCat; }
+$('#tsCatSel').onchange=e=>{
+  const v=e.target.value;
+  if(v===TS_NEW){
+    const name=(prompt('New category name (e.g. cowgirl):')||'').trim();
+    if(name){ tsCat=name; } // revert handled by fill below if blank
+    fillCatSelect([]);      // rebuild (tasteSummary will re-add server ones)
+    tasteSummary();
+  } else { tsCat=v; }
+};
 function tsThumb(f){
   const a=encodeURIComponent(qcAssume());
   const img=document.createElement('img'); img.className='tsthumb'; img.loading='lazy'; img.decoding='async';
@@ -612,40 +634,60 @@ function tsThumb(f){
     $('#qcLightbox img').src=img.currentSrc; $('#qcLightbox').classList.add('on'); };
   return img;
 }
+function tasteCard(f){
+  const card=document.createElement('div'); card.className='qccard';
+  card.appendChild(tsThumb(f));
+  const foot=document.createElement('div'); foot.style.display='flex';
+  const like=document.createElement('button'); like.className='tslike'; like.textContent='👍 like'; like.style.flex='2';
+  let liked=false, likedCat=null;
+  like.onclick=async()=>{
+    const cat=currentCategory();
+    if(!liked){
+      const r=await fetch('/api/taste/like',{method:'POST',headers:{'content-type':'application/json'},
+        body:JSON.stringify({key:f.key,time:f.time,path:f.path,category:cat})});
+      if(r.ok){ liked=true; likedCat=cat; like.classList.add('on');
+        like.textContent='❤ liked'+(cat?` · ${cat}`:''); tasteSummary(); }
+    } else {
+      const r=await fetch('/api/taste/unlike',{method:'POST',headers:{'content-type':'application/json'},
+        body:JSON.stringify({key:f.key,time:f.time,category:likedCat})});
+      if(r.ok){ liked=false; like.classList.remove('on'); like.textContent='👍 like'; tasteSummary(); }
+    }
+  };
+  const sim=document.createElement('button'); sim.className='tslike'; sim.textContent='⌕ more like this';
+  sim.style.cssText='flex:1;border-left:1px solid var(--line)';
+  sim.title='refresh the grid with frames similar to this one';
+  sim.onclick=()=>loadSimilar(f);
+  foot.appendChild(like); foot.appendChild(sim);
+  card.appendChild(foot);
+  return card;
+}
+function renderTasteFrames(frames){
+  const grid=$('#tsGrid'); grid.innerHTML='';
+  if(!frames.length){ grid.innerHTML='<div class="mut" style="padding:12px">No frames — run an embed first (Embed tab).</div>'; return; }
+  frames.forEach(f=>grid.appendChild(tasteCard(f)));
+}
 async function loadTaste(){
   const grid=$('#tsGrid'); grid.innerHTML='<div class="mut" style="padding:12px">loading…</div>';
+  const rand = currentCategory()===''? '&random=1' : '';   // untagged → truly random
   let data;
-  try{ data=await (await fetch('/api/taste/suggest?count=60')).json(); }
+  try{ data=await (await fetch('/api/taste/suggest?count=60'+rand)).json(); }
   catch(e){ grid.innerHTML='<div class="mut" style="padding:12px">could not load suggestions</div>'; return; }
-  tasteLoaded=true;
-  grid.innerHTML='';
-  if(!data.frames.length){ grid.innerHTML='<div class="mut" style="padding:12px">No embedded scenes yet — run an embed first (Embed tab).</div>'; return; }
-  data.frames.forEach(f=>{
-    const card=document.createElement('div'); card.className='qccard';
-    card.appendChild(tsThumb(f));
-    const btn=document.createElement('button'); btn.className='tslike'; btn.textContent='👍 like';
-    let liked=false, likedCat=null;
-    btn.onclick=async()=>{
-      const cat=$('#tsCat').value.trim();
-      if(!liked){
-        const r=await fetch('/api/taste/like',{method:'POST',headers:{'content-type':'application/json'},
-          body:JSON.stringify({key:f.key,time:f.time,path:f.path,category:cat})});
-        if(r.ok){ liked=true; likedCat=cat; btn.classList.add('on');
-          btn.textContent='❤ liked'+(cat?` · ${cat}`:''); tasteSummary(); }
-      } else {
-        const r=await fetch('/api/taste/unlike',{method:'POST',headers:{'content-type':'application/json'},
-          body:JSON.stringify({key:f.key,time:f.time,category:likedCat})});
-        if(r.ok){ liked=false; btn.classList.remove('on'); btn.textContent='👍 like'; tasteSummary(); }
-      }
-    };
-    card.appendChild(btn); grid.appendChild(card);
-  });
+  tasteLoaded=true; $('#tsMode').innerHTML = rand? 'Showing <b>random</b> frames across your library.' : '';
+  renderTasteFrames(data.frames);
+}
+async function loadSimilar(f){
+  const grid=$('#tsGrid'); grid.innerHTML='<div class="mut" style="padding:12px">finding similar frames…</div>';
+  let data;
+  try{ data=await (await fetch(`/api/taste/similar?key=${encodeURIComponent(f.key)}&time=${f.time}&count=60`)).json(); }
+  catch(e){ grid.innerHTML='<div class="mut" style="padding:12px">could not load similar frames</div>'; return; }
+  $('#tsMode').innerHTML='Showing frames <b>similar to</b> the one you picked · <a href="#" id="tsReset" style="color:var(--accent)">show random ↺</a>';
+  $('#tsReset').onclick=(e)=>{ e.preventDefault(); tasteLoaded=false; loadTaste(); };
+  renderTasteFrames(data.frames);
 }
 async function tasteSummary(){
   let s; try{ s=await (await fetch('/api/taste/summary')).json(); }catch(e){ return; }
-  const dl=$('#tsCats'); dl.innerHTML='';
-  s.categories.forEach(c=>{ const o=document.createElement('option'); o.value=c.name; dl.appendChild(o); });
-  if(!s.total){ $('#tsSummary').innerHTML=`<b>0</b> likes yet — thumb-up frames to seed <b>${s.base}</b>.`; return; }
+  fillCatSelect(s.categories.map(c=>c.name));
+  if(!s.total){ $('#tsSummary').innerHTML=`<b>0</b> likes yet — thumb-up frames to seed <b>${s.base}</b>. Pick or add a <b>category</b> above to tag them.`; return; }
   const parts=s.categories.map(c=>`${c.name} <b>${c.count}</b>`).join(' · ');
   $('#tsSummary').innerHTML=`<b>${s.total}</b> likes in <b>${s.base}</b>${parts?' — '+parts:''}`;
 }

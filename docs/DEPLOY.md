@@ -200,9 +200,15 @@ same profile the ❤️ flag marks feed).
   (nearest-neighbour — every like is its own reference, so distinct acts don't blur
   together); categories are for organising and, later, balancing a DJ set across
   acts. Leave the field blank to like without a tag.
-- **Load more** reshuffles a fresh batch (already-liked frames are excluded). Cold
-  start is pure random exploration; once you've liked a dozen-plus, suggestions
-  shift to "more like what you like" plus a few random, so the profile sharpens.
+- **Category dropdown.** Pick an existing category or **＋ New category…** to add
+  one; the choice tags every 👍 until you change it. **Untagged** = no tag.
+- **Load more** reshuffles a fresh batch (already-liked frames are excluded). With
+  **Untagged** selected it shows **truly random** frames across the library (broad
+  exploration); with a category selected and enough likes, it shifts toward "more
+  like what you like" so the profile sharpens.
+- **⌕ more like this** (next to each 👍) refills the grid with frames **similar to
+  that one** — query-by-example against the frame's vector, ranked by similarity,
+  capped per scene for variety. A "show random ↺" link returns to exploration.
 - Click a thumbnail to enlarge it. The header shows your total likes and the
   per-category breakdown.
 

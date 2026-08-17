@@ -69,23 +69,26 @@ def liked_vectors(store, cache: EmbeddingCache, model_name: str,
 
 
 def suggest_frames(store, cache: EmbeddingCache, model_name: str, base: str, *,
-                   count: int = 60, seed: int | None = None) -> list[dict]:
+                   count: int = 60, seed: int | None = None,
+                   random: bool = False) -> list[dict]:
     """Propose ``count`` frames to thumb-up, sampled across all embedded scenes.
 
-    Cold start (few likes) → pure random exploration. Warm → active learning:
-    mostly frames near your current taste plus a few random, so you reinforce and
-    expand categories. Already-liked frames are excluded. Returns dicts of
-    ``{key, path, time, score}`` the UI renders via ``/api/preview?path=&time=``.
+    ``random=True`` forces pure random exploration regardless of how many likes
+    you have — used for untagged "Load more", so you keep seeing a broad spread of
+    the library instead of only near your existing taste. Otherwise: cold start
+    (few likes) is random anyway, and once warm it's active learning (mostly
+    frames near your taste + a few random). Already-liked frames are excluded.
+    Returns dicts of ``{key, path, time, score}``.
     """
     if seed is None:
         seed = int(np.random.SeedSequence().generate_state(1)[0])
     exclude = _liked_ids(store, base)
     liked = liked_vectors(store, cache, model_name, base)
 
-    if liked.shape[0] >= WARM_AT:
+    if not random and liked.shape[0] >= WARM_AT:
         score_frames = make_similarity_scorer(liked, reduce="max")
         top_per_scene, random_per_scene = 2, 1
-    else:  # cold: everything random, no scoring signal yet
+    else:  # random exploration: no scoring signal
         score_frames = lambda vecs: np.zeros(len(vecs), dtype=np.float32)  # noqa: E731
         top_per_scene, random_per_scene = 0, 3
 
@@ -96,6 +99,49 @@ def suggest_frames(store, cache: EmbeddingCache, model_name: str, base: str, *,
     )
     return [{"key": c.key, "path": c.path, "time": round(c.time, 3),
              "score": round(c.score, 4)} for c in cands]
+
+
+def similar_frames(store, cache: EmbeddingCache, model_name: str, base: str,
+                   key: str, time: float, *, count: int = 60,
+                   per_scene_cap: int = 3) -> list[dict]:
+    """Frames across the library most similar to one anchor frame ("more like
+    this") — query-by-example. Scores every cached frame by cosine to the anchor
+    vector, drops already-liked frames and the anchor, caps how many come from any
+    one scene (variety), and returns the top ``count`` ranked by similarity.
+    """
+    if not cache.has(key, model_name):
+        return []
+    times, vecs, _ = cache.load(key, model_name)
+    if len(times) == 0:
+        return []
+    idx = int(np.argmin(np.abs(times - float(time))))
+    score_frames = make_similarity_scorer(vecs[idx:idx + 1], reduce="max")
+
+    exclude = _liked_ids(store, base)
+    exclude.add((key, round(float(time), 2)))  # never the anchor itself
+    scored: list[tuple[float, str, str | None, float]] = []
+    for k in cache.keys(model_name):
+        t, v, meta = cache.load(k, model_name)
+        if len(t) == 0:
+            continue
+        sc = score_frames(v)
+        for i in range(len(t)):
+            if (k, round(float(t[i]), 2)) in exclude:
+                continue
+            scored.append((float(sc[i]), k, meta.get("path"), float(t[i])))
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    out: list[dict] = []
+    per: dict[str, int] = {}
+    for s, k, p, tt in scored:
+        if per.get(k, 0) >= per_scene_cap:
+            continue
+        per[k] = per.get(k, 0) + 1
+        out.append({"key": k, "path": p, "time": round(tt, 3),
+                    "score": round(s, 4)})
+        if len(out) >= count:
+            break
+    return out
 
 
 def resolve_profile(base: str, category: str | None) -> str:

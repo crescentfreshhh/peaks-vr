@@ -118,6 +118,44 @@ def test_profile_name_sanitized(tmp_path):
         == "dj_hack_me"
 
 
+def test_random_forces_exploration_when_warm(tmp_path):
+    """A warm profile normally gets active-learning suggestions, but random=True
+    forces pure exploration (used by untagged 'Load more')."""
+    cache = _seed_cache(tmp_path / "cache")
+    store = LabelStore(tmp_path / "labels.json")
+    frames = taste.suggest_frames(store, cache, "fake", "dj", count=40, seed=1)
+    for f in frames[:taste.WARM_AT]:          # push over the warm threshold
+        taste.like_frame(store, f["key"], f["time"], f["path"], "dj", "cowgirl")
+    auto = taste.suggest_frames(store, cache, "fake", "dj", count=20, seed=2)
+    rand = taste.suggest_frames(store, cache, "fake", "dj", count=20, seed=2,
+                                random=True)
+    assert any(f["score"] != 0 for f in auto)          # warm → scored
+    assert all(f["score"] == 0 for f in rand)          # random → unscored
+
+
+def test_similar_frames_ranked_and_excludes_anchor(tmp_path):
+    cache = _seed_cache(tmp_path / "cache", scenes=5, frames=12)
+    store = LabelStore(tmp_path / "labels.json")
+    anchor = taste.suggest_frames(store, cache, "fake", "dj", count=1, seed=3)[0]
+    sim = taste.similar_frames(store, cache, "fake", "dj",
+                               anchor["key"], anchor["time"], count=15)
+    assert sim and all(set(f) >= {"key", "path", "time", "score"} for f in sim)
+    scores = [f["score"] for f in sim]
+    assert scores == sorted(scores, reverse=True)      # ranked most-similar first
+    ids = {(f["key"], round(f["time"], 2)) for f in sim}
+    assert (anchor["key"], round(anchor["time"], 2)) not in ids   # not the anchor
+    # per-scene variety cap
+    from collections import Counter
+    assert max(Counter(f["key"] for f in sim).values()) <= 3
+
+
+def test_similar_endpoint(tmp_path):
+    client, _ = _app(tmp_path, base="dj")
+    f = client.get("/api/taste/suggest?count=1&random=1").json()["frames"][0]
+    r = client.get(f"/api/taste/similar?key={f['key']}&time={f['time']}&count=8").json()
+    assert r["base"] == "dj" and r["count"] >= 1
+
+
 def test_taste_endpoints_flow(tmp_path):
     client, _ = _app(tmp_path, base="dj")
     s = client.get("/api/taste/suggest?count=12").json()

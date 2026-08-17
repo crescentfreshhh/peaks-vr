@@ -771,15 +771,28 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
     # --- DJ taste profile: bulk-curate taste from the embedded library -------
 
     @app.get("/api/taste/suggest")
-    def taste_suggest(count: int = 60, seed: int | None = None):
+    def taste_suggest(count: int = 60, seed: int | None = None,
+                      random: bool = False):
         """A batch of frames sampled across all embedded scenes to thumb-up.
-        Cold start = random exploration; warm = active learning. Excludes frames
-        already liked. Render each via /api/preview?path=&time=."""
+        ``random=true`` forces pure random exploration (untagged "Load more");
+        otherwise warm profiles get active learning. Excludes already-liked
+        frames. Render each via /api/preview?path=&time=."""
         from ..cache import EmbeddingCache
         from .. import taste as _taste
         cache = EmbeddingCache(cache_root)
         frames = _taste.suggest_frames(store, cache, model_dir, _profile(),
-                                       count=count, seed=seed)
+                                       count=count, seed=seed, random=random)
+        return {"count": len(frames), "base": _profile(), "frames": frames}
+
+    @app.get("/api/taste/similar")
+    def taste_similar(key: str, time: float, count: int = 60):
+        """Frames across the library most similar to one anchor frame — the
+        "more like this" query (query-by-example against the frame's vector)."""
+        from ..cache import EmbeddingCache
+        from .. import taste as _taste
+        cache = EmbeddingCache(cache_root)
+        frames = _taste.similar_frames(store, cache, model_dir, _profile(),
+                                       key, time, count=count)
         return {"count": len(frames), "base": _profile(), "frames": frames}
 
     @app.post("/api/taste/like")
