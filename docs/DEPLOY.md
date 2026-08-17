@@ -61,6 +61,21 @@ the GPU.)
 
 Open **http://\<server-ip\>:8801**. Three tabs — no console needed.
 
+### Password protection (optional)
+
+Set **`PEAKS_VR_PASSWORD`** to require a password for the WebGUI. Unset (the
+default) leaves it open on your LAN. When set:
+
+- Opening `:8801` shows a login page; the panel is unreachable until you sign in.
+- The session **locks after 1 hour of inactivity** (`PEAKS_VR_SESSION_TIMEOUT`
+  seconds) — "inactivity" means no interaction, so a tab left open still locks;
+  clicking/typing keeps it alive. A **Lock** link (top-right) signs out on demand.
+- It guards the browser app only. HereSphere's timestamp server / DeoVR remote
+  can't send a password, so playback is unaffected.
+
+The login cookie is signed with a key auto-generated at `/config/session.key`
+(persists across restarts; override with `PEAKS_VR_SECRET`).
+
 ### ① Embed library (do this first, no headset required)
 
 This is the GPU pass that measures every scene (sample a frame every N seconds →
@@ -81,10 +96,13 @@ one-time cost per file, **resumable**, and independent of HereSphere.
    failed** re-attempts only those (faster than a full rescan); a fixed file
    drops off the list automatically. Some errors mean the file itself is broken
    — e.g. `moov atom not found` = a truncated/incomplete mp4; fix or re-download
-   it before retrying. (NVDEC is optional: if the GPU/driver isn't available in
-   the container, decode falls back to CPU automatically — slower, but it won't
-   fail the file. To actually get GPU decode, ensure the unraid **Nvidia Driver**
-   plugin is installed and the container has `--runtime=nvidia`.)
+   it before retrying. The card now shows the **real reason** for each failure
+   (not just an exit code). VR de-warp is resilient: if the GPU (NVDEC) decode of
+   a scene crashes on a tricky encode, it **auto-retries that scene on CPU
+   decode** before marking it failed — so a GPU-hostile file still embeds. (NVDEC
+   is optional overall: without a GPU/driver, decode is CPU throughout — slower,
+   but it won't fail the file. For GPU decode, install the unraid **Nvidia
+   Driver** plugin and run with `--runtime=nvidia`.)
 
 **How long should embedding take?** VR sampling opens each file **once**, decodes
 **keyframes only** in a single process, and de-warps them in-process (the same
@@ -200,6 +218,9 @@ once scenes are embedded.)
 | `PEAKS_VR_PREVIEW` | _(off)_ | `1` = live de-warped preview (needs ffmpeg + an embedded scene) |
 | `PEAKS_SCENE_TIMEOUT` | `900` | per-scene sampling ceiling in seconds (`0` = off); fallback for CLI embeds — the Embed tab's field overrides it per run |
 | `PEAKS_VR_MAX_RAM_GB` | `24` | RAM watchdog cap in GB (`0` = disable). Under pressure it reclaims memory; at the cap it stops the run cleanly (resumable) before an OOM kill |
+| `PEAKS_VR_PASSWORD` | _(unset)_ | set to require a password for the WebGUI; unset = open. Session locks after the idle timeout |
+| `PEAKS_VR_SESSION_TIMEOUT` | `3600` | WebGUI idle-session timeout in seconds (1 hour). Only used when `PEAKS_VR_PASSWORD` is set |
+| `PEAKS_VR_SECRET` | _(auto)_ | cookie signing key. Auto-generated + persisted to `/config/session.key`; set to pin it |
 
 ## Path mapping note
 

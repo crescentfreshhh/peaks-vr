@@ -266,6 +266,22 @@ def _sparse_dewarp_worker(
     except Exception:
         pass
 
+    # Record the real reason on failure so the parent can surface it (the child's
+    # traceback otherwise only reaches stderr). Cleared on success.
+    try:
+        _sparse_dewarp_extract(path, interval, crop, out_path, filter_chain,
+                               hwaccel, av, np)
+    except BaseException as exc:  # incl. the RuntimeErrors below
+        try:
+            with open(out_path + ".err", "w") as fh:
+                fh.write(f"{type(exc).__name__}: {exc}")
+        except OSError:
+            pass
+        raise
+
+
+def _sparse_dewarp_extract(path, interval, crop, out_path, filter_chain, hwaccel,
+                           av, np) -> None:
     max_total_errors = 60
     max_scene_hours = 12.0
     times: list[float] = []
@@ -592,26 +608,25 @@ class FrameSampler:
             f"crop={crop}:{crop}"
         )
 
-    def _iter_frames_dewarp_inproc(self, path: str, *, resize_short: int, crop: int):
-        """VR de-warp at sparse cost, in ONE process: open the file once, decode
-        keyframes, and apply the v360 filtergraph in-process (PyAV). Runs in a
-        spawned child with a kill-timeout, like `_iter_frames_sparse`, so a
-        pathological file can't wedge the run."""
+    def _run_dewarp_worker(self, path: str, filter_chain: str, crop: int,
+                           hwaccel: str):
+        """Spawn the de-warp worker with a given decode backend and return
+        (times, frames) arrays, or raise :class:`SamplerError` with the *real*
+        reason (read from the worker's ``.err`` sidecar, or the exit signal for a
+        hard crash). Runs in a spawned child with the kill-timeout."""
         import multiprocessing as mp
         import os
         import tempfile
 
         import numpy as np  # lazy
 
-        if self.interval <= 0:
-            return
-        filter_chain = self._dewarp_raw_vf(resize_short, crop)
         fd, out_path = tempfile.mkstemp(suffix=".npz", prefix="peaks-vrdewarp-")
         os.close(fd)
+        err_path = out_path + ".err"
         ctx = mp.get_context("spawn")  # fresh interpreter: no CUDA-fork hazards
         proc = ctx.Process(
             target=_sparse_dewarp_worker,
-            args=(path, self.interval, crop, out_path, filter_chain, self.hwaccel),
+            args=(path, self.interval, crop, out_path, filter_chain, hwaccel),
         )
         try:
             proc.start()
@@ -627,22 +642,69 @@ class FrameSampler:
                     f"{path} (corrupt/pathological file?) — killed"
                 )
             if proc.exitcode != 0:
-                raise SamplerError(
-                    f"VR de-warp extraction failed for {path} "
-                    f"(worker exit {proc.exitcode})"
-                )
+                reason = ""
+                try:
+                    if os.path.exists(err_path):
+                        reason = open(err_path).read().strip()
+                except OSError:
+                    pass
+                if not reason and proc.exitcode and proc.exitcode < 0:
+                    reason = (f"decoder crashed (signal {-proc.exitcode}) — "
+                              f"likely {hwaccel or 'CPU'} decode on this encode")
+                detail = f": {reason}" if reason else f" (worker exit {proc.exitcode})"
+                raise SamplerError(f"VR de-warp extraction failed for {path}{detail}")
             if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
                 raise SamplerError(f"no frames produced for {path}")
             with np.load(out_path) as data:
-                times = data["times"]
-                frames = data["frames"]
-            for i in range(len(times)):
-                yield float(times[i]), frames[i]
+                return np.array(data["times"]), np.array(data["frames"])
         finally:
+            for p in (out_path, err_path):
+                try:
+                    os.unlink(p)
+                except OSError:  # pragma: no cover
+                    pass
+
+    def _iter_frames_dewarp_inproc(self, path: str, *, resize_short: int, crop: int):
+        """VR de-warp at sparse cost, in ONE process: open the file once, decode
+        keyframes, and apply the v360 filtergraph in-process (PyAV). Runs in a
+        spawned child with a kill-timeout, like `_iter_frames_sparse`, so a
+        pathological file can't wedge the run.
+
+        Resilience ladder: try the configured decode (NVDEC when cuda/auto); if
+        the worker fails or crashes, **retry once on CPU decode** — NVDEC can
+        hard-crash on some 8K HEVC encodes, and CPU keyframe decode is already
+        cheap, so a GPU-hostile file still embeds instead of being marked failed.
+        """
+        import sys
+
+        if self.interval <= 0:
+            return
+        filter_chain = self._dewarp_raw_vf(resize_short, crop)
+
+        # dedup while preserving order: configured backend, then plain CPU.
+        backends: list[str] = []
+        for hw in (self.hwaccel, ""):
+            if hw not in backends:
+                backends.append(hw)
+
+        times = frames = None
+        last_err: Exception | None = None
+        for i, hw in enumerate(backends):
             try:
-                os.unlink(out_path)
-            except OSError:  # pragma: no cover
-                pass
+                times, frames = self._run_dewarp_worker(path, filter_chain, crop, hw)
+                break
+            except SamplerError as exc:
+                last_err = exc
+                is_last = i == len(backends) - 1
+                if not is_last:
+                    sys.stderr.write(
+                        f"[peaks-vr] {hw or 'CPU'} de-warp failed for {path} "
+                        f"({exc}); retrying on CPU decode\n"
+                    )
+        if times is None:
+            raise SamplerError(str(last_err))
+        for i in range(len(times)):
+            yield float(times[i]), frames[i]
 
     def _iter_frames_dewarp_seek(self, path: str, *, resize_short: int, crop: int):
         """VR de-warp sampling with sparse cost: seek to each planned timestamp

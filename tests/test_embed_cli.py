@@ -93,6 +93,49 @@ def test_inproc_vr_dewarp_hwaccel_auto_falls_back_to_cpu(tmp_path):
         assert np.array_equal(aa, ac)
 
 
+def test_dewarp_cpu_retry_on_gpu_failure(tmp_path, monkeypatch):
+    """When the NVDEC (auto/cuda) worker fails, the sampler retries once on CPU
+    decode so a GPU-hostile file still embeds — the fix for the reported crashes."""
+    pytest.importorskip("av")
+    from peaks_vr.sampling import SamplerError
+
+    vid = tmp_path / "scene_180_sbs.mp4"
+    _make_sbs(vid)
+    rep = Reprojector.for_format(detect("scene_180_sbs.mp4"), input_size=256)
+    s = FrameSampler(interval_seconds=4.0, mode="sparse", reproject=rep, hwaccel="auto")
+
+    real = s._run_dewarp_worker
+    calls = []
+    def fake(path, fc, crop, hw):
+        calls.append(hw)
+        if hw != "":                       # simulate an NVDEC crash on GPU decode
+            raise SamplerError("simulated NVDEC crash")
+        return real(path, fc, crop, "")    # CPU path really runs
+    monkeypatch.setattr(s, "_run_dewarp_worker", fake)
+
+    frames = list(s.iter_frames_raw(str(vid), resize_short=256, crop=224))
+    assert calls == ["auto", ""]           # tried GPU, then fell back to CPU
+    assert len(frames) >= 3
+
+
+def test_dewarp_surfaces_worker_error(tmp_path):
+    """A worker failure surfaces the *real* reason (from the .err sidecar), not a
+    bare 'worker exit N'."""
+    pytest.importorskip("av")
+    from peaks_vr.sampling import SamplerError
+
+    bad = tmp_path / "broken_180_sbs.mp4"
+    bad.write_bytes(b"not a valid video file")
+    rep = Reprojector.for_format(detect("broken_180_sbs.mp4"), input_size=256)
+    s = FrameSampler(interval_seconds=4.0, mode="sparse", reproject=rep, hwaccel="")
+
+    with pytest.raises(SamplerError) as ei:
+        list(s.iter_frames_raw(str(bad), resize_short=256, crop=224))
+    msg = str(ei.value)
+    assert "extraction failed" in msg
+    assert ":" in msg.split(str(bad))[-1]  # a real reason follows the path
+
+
 # --- fallback: per-sample ffmpeg seek path (used only if `av` is missing) ----
 
 def _fake_run_factory(record, *, crop):

@@ -58,10 +58,14 @@ try:
         fov: float = 100.0
         pitch: float = 0.0
         flat: bool = False
+
+    class LoginBody(BaseModel):
+        password: str = ""
 except ImportError:  # pragma: no cover - only when fastapi/pydantic absent
     MarkBody = None  # type: ignore
     EmbedBody = None  # type: ignore
     ReembedBody = None  # type: ignore
+    LoginBody = None  # type: ignore
 
 
 # --- the playback mirror ----------------------------------------------------
@@ -332,15 +336,81 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
     """Build the FastAPI app. ``sampler`` (a configured
     :class:`peaks_vr.sampling.FrameSampler`, optionally with a ``reproject``)
     enables the live de-warped preview; without it ``/api/frame`` returns 503."""
-    from fastapi import FastAPI, HTTPException, Response
-    from fastapi.responses import FileResponse
+    import os
 
+    from fastapi import FastAPI, HTTPException, Request, Response
+    from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+
+    from . import auth as _auth
     from .jobs import JobManager
 
     from ..memwatch import MemoryWatchdog, limit_from_env
 
     app = FastAPI(title="peaks-vr")
     active_profile = profile
+
+    # --- optional password gate (opt-in via PEAKS_VR_PASSWORD) ---------------
+    _password = os.environ.get("PEAKS_VR_PASSWORD") or ""
+    _auth_on = bool(_password)
+    _secret = _auth.load_secret(cache_root) if _auth_on else b""
+    try:
+        _timeout = int(os.environ.get("PEAKS_VR_SESSION_TIMEOUT", "3600"))
+    except ValueError:
+        _timeout = 3600
+    # Endpoints the browser polls in the background: they require a valid session
+    # but must NOT renew it, so "idle" means no *user* interaction (a left-open
+    # tab still lapses). Everything else — and an explicit /api/ping on activity —
+    # slides the expiry forward.
+    _POLL_PATHS = {"/api/state", "/api/mem", "/api/embed/status"}
+    _OPEN_PATHS = {"/login", "/api/login"}
+
+    def _set_session(resp) -> None:
+        value, max_age = _auth.make_cookie(_secret, _timeout)
+        resp.set_cookie(_auth.COOKIE, value, max_age=max_age, httponly=True,
+                        samesite="lax", path="/")
+
+    if _auth_on:
+        @app.middleware("http")
+        async def _gate(request: Request, call_next):
+            path = request.url.path
+            if path in _OPEN_PATHS:
+                return await call_next(request)
+            if not _auth.verify(_secret, request.cookies.get(_auth.COOKIE)):
+                if path.startswith("/api/"):
+                    return Response('{"detail":"authentication required"}',
+                                    status_code=401, media_type="application/json")
+                return RedirectResponse("/login", status_code=303)
+            resp = await call_next(request)
+            if path not in _POLL_PATHS:   # slide the idle timeout on real use
+                _set_session(resp)
+            return resp
+
+    @app.get("/login", response_class=HTMLResponse)
+    def login_page():
+        return HTMLResponse(_auth.LOGIN_PAGE)
+
+    @app.post("/api/login")
+    def login(body: LoginBody):
+        if not _auth_on:
+            return {"ok": True}                       # gate disabled — always in
+        import time as _t
+        if not _auth.check_password(_password, body.password):
+            _t.sleep(0.5)                             # blunt brute-force guessing
+            raise HTTPException(401, "incorrect password")
+        resp = Response('{"ok":true}', media_type="application/json")
+        _set_session(resp)
+        return resp
+
+    @app.post("/api/logout")
+    def logout():
+        resp = Response('{"ok":true}', media_type="application/json")
+        resp.delete_cookie(_auth.COOKIE, path="/")
+        return resp
+
+    @app.post("/api/ping")
+    def ping():
+        # A valid session reached here (past the gate); the middleware renews it.
+        return {"ok": True, "auth": _auth_on}
     # Persist the embed run's log/status beside the cache (same /config volume as
     # failures.json / overrides.json) so it survives a restart and shows on any
     # device's fresh load.

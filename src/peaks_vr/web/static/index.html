@@ -101,7 +101,7 @@
 </head>
 <body>
 <div class="wrap">
-  <h1><span>peaks</span>-vr</h1>
+  <h1><span>peaks</span>-vr <a href="#" id="lock" class="mut hide" style="float:right;font-size:12px;font-weight:400">Lock 🔒</a></h1>
   <div class="sub">taste-driven moment discovery for VR video</div>
 
   <div class="tabs">
@@ -278,6 +278,33 @@
 
 <script>
 const $ = s => document.querySelector(s);
+
+// ---------- auth: bounce to login on 401; keep session alive on real activity ----------
+(function(){
+  const _fetch = window.fetch;
+  window.fetch = async (...a) => {
+    const r = await _fetch(...a);
+    if(r.status === 401){ location.href = '/login'; }
+    return r;
+  };
+  // ping only on genuine user interaction (throttled), so a left-open tab still
+  // idles out after the server's timeout — background polls don't count.
+  let lastPing = 0;
+  const ping = () => {
+    const now = Date.now();
+    if(now - lastPing < 5*60*1000) return;   // at most once / 5 min
+    lastPing = now;
+    window.fetch('/api/ping', {method:'POST'}).then(r => r.ok && r.json()).then(j => {
+      if(j && j.auth) $('#lock').classList.remove('hide');   // gate is on → show Lock
+    }).catch(()=>{});
+  };
+  ['mousemove','keydown','click','touchstart','scroll'].forEach(
+    e => window.addEventListener(e, ping, {passive:true}));
+  ping();   // initial: also reveals the Lock link when auth is enabled
+  const lock = $('#lock');
+  if(lock) lock.onclick = async (ev) => { ev.preventDefault();
+    await _fetch('/api/logout', {method:'POST'}); location.href = '/login'; };
+})();
 
 // ---------- tabs ----------
 let qcLoaded = false;
