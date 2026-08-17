@@ -10,6 +10,22 @@ def test_read_rss_bytes_positive():
     assert read_rss_bytes() > 0
 
 
+def test_container_total_at_least_working_set():
+    from peaks_vr.memwatch import read_container_bytes
+    ct = read_container_bytes()
+    # docker-stats total (if cgroup exposes it) is >= the anonymous working set
+    assert ct is None or ct >= read_rss_bytes()
+
+
+def test_snapshot_carries_container_total():
+    w = MemoryWatchdog(24 * GB)
+    snap = w.snapshot()
+    assert "container_gb" in snap
+    # working set is the capped number; container is either a number or null
+    assert snap["current_gb"] > 0
+    assert snap["container_gb"] is None or snap["container_gb"] >= snap["current_gb"]
+
+
 def test_limit_from_env(monkeypatch):
     monkeypatch.delenv("PEAKS_VR_MAX_RAM_GB", raising=False)
     assert limit_from_env() == 24 * GB

@@ -8,9 +8,11 @@ a bit of shared state behind a lock, a rolling log, and a cooperative stop flag.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections import deque
+from pathlib import Path
 from typing import Callable
 
 
@@ -28,7 +30,7 @@ class Job:
         self.stats: dict = {}
         self.started = time.monotonic()
         self.finished: float | None = None
-        self._log: deque[str] = deque(maxlen=200)
+        self._log: deque[str] = deque(maxlen=1000)
 
     def log(self, line: str) -> None:
         self._log.append(line.rstrip())
@@ -65,11 +67,41 @@ class Job:
 class JobManager:
     """Runs at most one :class:`Job` at a time."""
 
-    def __init__(self) -> None:
+    def __init__(self, persist_path: str | Path | None = None) -> None:
         self._lock = threading.Lock()
         self._job: Job | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        # Persist the run's snapshot to /config so the log/result survive a
+        # container restart and are visible from any device on a fresh load.
+        self._persist_path = Path(persist_path) if persist_path else None
+        self._persisted: dict | None = self._load_persisted()
+        self._last_write = 0.0
+
+    def _load_persisted(self) -> dict | None:
+        if not self._persist_path or not self._persist_path.exists():
+            return None
+        try:
+            return json.loads(self._persist_path.read_text())
+        except Exception:
+            return None
+
+    def _persist(self, snap: dict, *, force: bool = False) -> None:
+        """Write-through the latest snapshot (atomic), throttled to ~1/s unless
+        ``force`` (used on job completion so the final state always lands)."""
+        if not self._persist_path:
+            return
+        now = time.monotonic()
+        if not force and now - self._last_write < 1.0:
+            return
+        self._last_write = now
+        try:
+            self._persist_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._persist_path.with_name(self._persist_path.name + ".tmp")
+            tmp.write_text(json.dumps(snap))
+            tmp.replace(self._persist_path)
+        except OSError:
+            pass
 
     @property
     def running(self) -> bool:
@@ -105,6 +137,7 @@ class JobManager:
                     job.log(f"! {exc}")
                 finally:
                     job.finished = time.monotonic()
+                    self._persist(job.snapshot(), force=True)
 
             self._thread = threading.Thread(target=_run, daemon=True)
             self._thread.start()
@@ -114,5 +147,11 @@ class JobManager:
         self._stop.set()
 
     def status(self) -> dict | None:
+        """The live job's snapshot (persisted as a side effect), or the last-run
+        snapshot loaded from disk if no job has run in this process."""
         job = self._job
-        return job.snapshot() if job is not None else None
+        if job is None:
+            return self._persisted
+        snap = job.snapshot()
+        self._persist(snap)
+        return snap

@@ -110,8 +110,27 @@ it reclaims memory (GC + CUDA cache + return arenas to the OS), and if it reache
 the cap it **stops the run cleanly** — before the kernel OOM-killer can crash the
 container — logging why. Since embedding is resumable, you lose nothing: free
 headroom (raise the cap, raise the **Interval**, or use a lighter model) and start
-again. The Embed tab shows live `RAM x.x / 24 GB`. Set `PEAKS_VR_MAX_RAM_GB=0` to
-disable.
+again. Set `PEAKS_VR_MAX_RAM_GB=0` to disable.
+
+The Embed tab shows `RAM 1.4 / 24 GB · container 8.4 GB`. Two numbers, because
+they measure different things — and this is why the peaks-vr figure looks lower
+than `docker stats`:
+
+- **`RAM` (working set)** — anonymous memory (heap, tensors, decode buffers). This
+  is what actually causes an OOM kill, so **the 24 GB cap is enforced on this
+  number**.
+- **`container`** — the total `docker stats` reports: the working set **plus**
+  reclaimable file page cache and the multi-GB CUDA/torch library mappings (and
+  page cache from reading 8K files). It's larger, but that extra memory is
+  reclaimable and doesn't OOM you, so it isn't what the cap watches.
+
+So a gap between the two (e.g. peaks-vr says 1.4 GB while `docker stats` says
+8.4 GB) is normal and healthy — most of the difference is CUDA/torch libraries
+and file cache.
+
+The embed **log and last result are persisted** to `/config/embed_status.json`,
+so the running (or last) run's progress and log show on a page refresh, from any
+device, and even after a container restart.
 
 **Per-scene timeout.** Each scene has a ceiling (default **900 s** = 15 min);
 past it the scene is marked failed and the run moves on, so one pathological file

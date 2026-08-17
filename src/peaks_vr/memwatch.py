@@ -112,6 +112,44 @@ def read_rss_bytes() -> int:
     return _cgroup_bytes() or _proc_tree_rss() or 0
 
 
+def read_container_bytes() -> int | None:
+    """Total container memory the way ``docker stats`` reports it, or None.
+
+    ``docker stats`` = current usage minus *inactive* (reclaimable) file cache.
+    This is larger than :func:`read_rss_bytes` (the anonymous working set) because
+    it also counts file-backed page cache and the multi-GB CUDA/torch library
+    mappings — reclaimable memory that inflates the number but does not cause an
+    OOM. Shown next to the working set so the two reconcile, but the watchdog caps
+    on the working set (the real OOM signal)."""
+    def _stat(path: str) -> dict[str, int]:
+        out: dict[str, int] = {}
+        with open(path) as fh:
+            for line in fh:
+                k, _, v = line.partition(" ")
+                try:
+                    out[k] = int(v)
+                except ValueError:
+                    pass
+        return out
+
+    try:  # cgroup v2: memory.current − inactive_file
+        with open("/sys/fs/cgroup/memory.current") as fh:
+            current = int(fh.read().strip())
+        inactive = _stat("/sys/fs/cgroup/memory.stat").get("inactive_file", 0)
+        return max(0, current - inactive)
+    except OSError:
+        pass
+    try:  # cgroup v1: usage_in_bytes − total_inactive_file
+        with open("/sys/fs/cgroup/memory/memory.usage_in_bytes") as fh:
+            usage = int(fh.read().strip())
+        inactive = _stat("/sys/fs/cgroup/memory/memory.stat").get(
+            "total_inactive_file", 0)
+        return max(0, usage - inactive)
+    except OSError:
+        pass
+    return None
+
+
 def _malloc_trim() -> None:
     """Return freed glibc malloc arenas to the OS (no-op off glibc)."""
     try:
@@ -277,11 +315,13 @@ class MemoryWatchdog:
         return True
 
     def snapshot(self) -> dict:
-        cur = self.current()
+        cur = self.current()  # working set — the capped, OOM-relevant number
         self._peak = max(self._peak, cur)
+        container = read_container_bytes() if self.enabled else None
         return {
             "enabled": self.enabled,
             "current_gb": round(cur / GB, 2),
+            "container_gb": round(container / GB, 2) if container is not None else None,
             "peak_gb": round(self._peak / GB, 2),
             "limit_gb": round(self.limit / GB, 2),
             "soft_gb": round(self.soft / GB, 2),

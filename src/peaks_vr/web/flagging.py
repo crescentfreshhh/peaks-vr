@@ -341,7 +341,11 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
 
     app = FastAPI(title="peaks-vr")
     active_profile = profile
-    jobs = jobs or JobManager()
+    # Persist the embed run's log/status beside the cache (same /config volume as
+    # failures.json / overrides.json) so it survives a restart and shows on any
+    # device's fresh load.
+    jobs = jobs or JobManager(
+        persist_path=Path(cache_root).parent / "embed_status.json")
     model_dir = _CANONICAL_MODEL.get(model, model)
 
     # Self-regulating RAM watchdog (default cap 24 GB, PEAKS_VR_MAX_RAM_GB). A

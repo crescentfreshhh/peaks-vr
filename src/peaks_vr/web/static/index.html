@@ -321,8 +321,12 @@ function showMem(m){
   const col = m.tripped?'var(--love)':(m.pct>=80?'var(--accent)':'var(--dim)');
   const tag = m.tripped?' — <b style="color:var(--love)">capped (run halted to stay under limit)</b>'
     : (m.pct>=80?' — high, reclaiming':'');
+  const cont = (m.container_gb!=null)?` · container ${m.container_gb} GB`:'';
+  $('#memNote').title = 'The 24 GB cap is on the working set (anonymous RAM — what '
+    + 'causes an OOM). "container" is the total docker stats shows: working set '
+    + 'plus reclaimable page cache and CUDA/torch library mappings.';
   $('#memNote').innerHTML=`<span style="color:${col}">RAM ${m.current_gb} / ${m.limit_gb} GB</span>`
-    + ` · peak ${m.peak_gb}${tag}`;
+    + `${cont} · peak ${m.peak_gb}${tag}`;
 }
 async function pollMem(){ try{ showMem(await (await fetch('/api/mem')).json()); }catch(e){} }
 $('#pvGo').onclick = async () => {
@@ -356,6 +360,7 @@ async function pollEmbed(){
   showMem(s.mem);
   const j=s.job;
   if(j){
+    $('#emProgWrap').classList.remove('hide');  // show log on any load/device, not just after Start
     const pct = j.total? Math.round(100*j.done/j.total):0;
     $('#emBar').style.width=pct+'%';
     const eta = j.eta_seconds!=null? `, ~${Math.round(j.eta_seconds/60)}m left`:'';

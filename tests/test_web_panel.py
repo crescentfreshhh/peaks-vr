@@ -254,6 +254,37 @@ def test_embed_job_halts_on_ram_watchdog(tmp_path):
     assert any("watchdog" in m.lower() for m in job.logs)
 
 
+def test_embed_log_persists_across_restart(tmp_path):
+    """The embed log/status is written to /config and served by a fresh app
+    instance (a container restart), so the log survives refreshes, other devices,
+    and restarts."""
+    media = tmp_path / "media"; media.mkdir()
+    (media / "a_180_sbs.mp4").write_bytes(b"x")
+    cache_root = tmp_path / "cache"
+
+    def build():
+        app = create_app(PlaybackMirror(), LabelStore(tmp_path / "l.json"),
+                         media_root=str(media), cache_root=str(cache_root),
+                         model="fake")
+        return TestClient(app)
+
+    c1 = build()
+    c1.post("/api/embed/start", json={"interval": 8, "vr": False, "hwaccel": "none"})
+    _wait_idle(c1)
+    live = c1.get("/api/embed/status").json()["job"]
+    assert live["status"] in ("done", "stopped") and live["log"]
+    assert (cache_root.parent / "embed_status.json").exists()
+
+    # a brand-new app with the same cache_root (simulates a restart) still serves
+    # the last run's log + status, with running=False
+    c2 = build()
+    snap = c2.get("/api/embed/status").json()
+    assert snap["running"] is False
+    assert snap["job"] is not None
+    assert snap["job"]["status"] == live["status"]
+    assert snap["job"]["log"] == live["log"]
+
+
 def test_embed_start_requires_media(tmp_path):
     client, _ = _panel(tmp_path, with_media=False)
     # media dir exists but is empty → job runs, finds 0 files
