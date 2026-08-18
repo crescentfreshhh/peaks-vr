@@ -156,6 +156,35 @@ def test_similar_endpoint(tmp_path):
     assert r["base"] == "dj" and r["count"] >= 1
 
 
+def test_reset_clears_all_categories(tmp_path):
+    """Full reset removes every like across the base profile and all its
+    categories, and persists."""
+    cache = _seed_cache(tmp_path / "cache")
+    store = LabelStore(tmp_path / "labels.json")
+    frames = taste.suggest_frames(store, cache, "fake", "dj", count=40, seed=6)
+    taste.like_frame(store, frames[0]["key"], frames[0]["time"], None, "dj", "cowgirl")
+    taste.like_frame(store, frames[1]["key"], frames[1]["time"], None, "dj", "blowjob")
+    taste.like_frame(store, frames[2]["key"], frames[2]["time"], None, "dj", None)
+    assert taste.taste_summary(store, "dj")["total"] == 3
+    removed = taste.reset_taste(store, "dj")
+    store.save()
+    assert removed == 3
+    assert taste.taste_summary(store, "dj")["total"] == 0
+    # a fresh store from disk confirms it persisted
+    assert len(LabelStore(tmp_path / "labels.json")) == 0
+
+
+def test_reset_endpoint(tmp_path):
+    client, _ = _app(tmp_path, base="dj")
+    f = client.get("/api/taste/suggest?count=1&random=1").json()["frames"][0]
+    client.post("/api/taste/like", json={"key": f["key"], "time": f["time"],
+                                         "path": f["path"], "category": "x"})
+    assert client.get("/api/taste/summary").json()["total"] == 1
+    r = client.post("/api/taste/reset").json()
+    assert r["removed"] == 1 and r["profile"] == "dj"
+    assert client.get("/api/taste/summary").json()["total"] == 0
+
+
 def test_taste_endpoints_flow(tmp_path):
     client, _ = _app(tmp_path, base="dj")
     s = client.get("/api/taste/suggest?count=12").json()

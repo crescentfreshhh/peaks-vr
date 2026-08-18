@@ -818,6 +818,16 @@ def create_app(mirror: PlaybackMirror, store: LabelStore, *,
         from .. import taste as _taste
         return _taste.taste_summary(store, _profile())
 
+    @app.post("/api/taste/reset")
+    def taste_reset():
+        """Full reset: delete every like in the active profile and all its
+        categories. Irreversible; the UI confirms first."""
+        from .. import taste as _taste
+        removed = _taste.reset_taste(store, _profile())
+        if removed:
+            store.save()
+        return {"ok": True, "removed": removed, "profile": _profile()}
+
     return app
 
 

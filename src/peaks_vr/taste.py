@@ -171,6 +171,16 @@ def unlike_frame(store, key: str, time: float, base: str,
     return False
 
 
+def reset_taste(store, base: str) -> int:
+    """Delete every like for this taste profile — the base and all its categories
+    (``base:*``). Returns how many labels were removed. Caller persists via
+    ``store.save()``. This is the full reset behind the DJ page's Reset button."""
+    removed = 0
+    for prof in category_profiles(store, base):
+        removed += store.remove(prof)
+    return removed
+
+
 def taste_summary(store, base: str) -> dict:
     """Per-category like counts + the total, for the Taste tab header."""
     cats = []

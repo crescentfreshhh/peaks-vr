@@ -250,6 +250,7 @@
           <button id="tsMore" class="primary" style="width:100%;margin-top:10px">↻ Load more</button>
           <div class="mut" id="tsSummary" style="margin-top:10px">…</div>
           <div class="mut" id="tsMode" style="margin-top:6px"></div>
+          <button id="tsResetAll" style="width:100%;margin-top:12px;color:var(--love);border-color:var(--love)">Reset taste — clear all likes</button>
         </div>
       </div>
       <div class="qcgrid" id="tsGrid"></div>
@@ -699,6 +700,16 @@ async function tasteSummary(){
   $('#tsSummary').innerHTML=`<b>${s.total}</b> likes in <b>${s.base}</b>${parts?' — '+parts:''}`;
 }
 $('#tsMore').onclick=()=>{ tasteLoaded=false; loadTaste(); };
+$('#tsResetAll').onclick=async()=>{
+  const base=$('#profileSel').value||'this profile';
+  if(!confirm(`Delete ALL likes in the "${base}" taste profile (every category)?\nThis cannot be undone.`)) return;
+  const r=await fetch('/api/taste/reset',{method:'POST'});
+  if(!r.ok){ alert('reset failed'); return; }
+  const j=await r.json();
+  tsCat='';                       // categories are gone
+  tasteSummary(); tasteLoaded=false; loadTaste();
+  $('#tsMode').textContent=`Reset — removed ${j.removed} like(s).`;
+};
 
 // ================= FLAG =================
 let state={path:null,current_time:0,playing:false,connected:false}, inT=null, outT=null;
