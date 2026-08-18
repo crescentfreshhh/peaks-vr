@@ -103,6 +103,15 @@
   .tslike{display:block;width:100%;border-radius:0;border:0;border-top:1px solid var(--line);
     background:var(--panel2);color:var(--dim);font-weight:700;padding:9px;cursor:pointer}
   .tslike.on{background:var(--love);color:#fff;border-color:var(--love)}
+  /* dj taste: sticky left rail + grid, so the category control follows the scroll */
+  .tsplit{display:flex;gap:14px;align-items:flex-start}
+  .tsrail{flex:0 0 240px;position:sticky;top:12px;align-self:flex-start;z-index:5}
+  .tsrail .card{margin-bottom:0}
+  .tsplit>.qcgrid{flex:1 1 auto;min-width:0;margin-top:0}
+  @media(max-width:720px){
+    .tsplit{flex-direction:column}
+    .tsrail{position:sticky;top:0;flex-basis:auto;width:100%}
+  }
 </style>
 </head>
 <body>
@@ -229,24 +238,22 @@
 
   <!-- ================= DJ TASTE TAB ================= -->
   <section id="pane-taste" class="hide">
-    <div class="card">
-      <h2>Build your DJ taste — thumb-up what you like</h2>
-      <div class="mut">Random frames from across your embedded library. 👍 the ones
-        that match your taste; each becomes a positive example the DJ learns from —
-        no headset needed. Optionally tag a <b>category</b> (cowgirl, blowjob…) so
-        the DJ can balance a set across acts. Set a category, thumb-up all the
-        frames that fit it, then switch. Matching spans <i>all</i> your likes
-        (nearest-neighbour), so categories organise — they don't wall off.</div>
-      <div class="row" style="margin-top:10px">
-        <div style="flex:2"><label class="f">Category for these picks</label>
-          <select id="tsCatSel"></select></div>
-        <div style="flex:1"><label class="f">&nbsp;</label>
-          <button id="tsMore" class="primary" style="width:100%">↻ Load more</button></div>
+    <div class="tsplit">
+      <div class="tsrail">
+        <div class="card">
+          <h2>DJ taste</h2>
+          <div class="mut" style="margin-bottom:6px">👍 frames you like; tag a
+            <b>category</b> to organise. Matching spans <i>all</i> your likes, so
+            categories don't wall off. No headset needed.</div>
+          <label class="f">Category for these picks</label>
+          <select id="tsCatSel"></select>
+          <button id="tsMore" class="primary" style="width:100%;margin-top:10px">↻ Load more</button>
+          <div class="mut" id="tsSummary" style="margin-top:10px">…</div>
+          <div class="mut" id="tsMode" style="margin-top:6px"></div>
+        </div>
       </div>
-      <div class="mut" id="tsSummary" style="margin-top:10px">…</div>
-      <div class="mut" id="tsMode" style="margin-top:6px"></div>
+      <div class="qcgrid" id="tsGrid"></div>
     </div>
-    <div class="qcgrid" id="tsGrid"></div>
   </section>
 
   <!-- ================= FLAG TAB ================= -->
